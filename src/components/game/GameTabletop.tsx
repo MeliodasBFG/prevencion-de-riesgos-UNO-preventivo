@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import confetti from 'canvas-confetti';
 import {
   Volume2,
   VolumeX,
+  Music,
   History,
   LogOut,
   RotateCcw,
@@ -34,6 +35,7 @@ import { RadialColorSelector } from './RadialColorSelector';
 import { PreventiveShieldModal } from './PreventiveShieldModal';
 import { IsoPictogram } from './IsoPictogram';
 import { BookGuideButton, InstructionsBookModal } from './InstructionsBookModal';
+import { soundEngine } from '@/lib/soundEngine';
 
 interface GameTabletopProps {
   gameState: GameState;
@@ -44,8 +46,10 @@ interface GameTabletopProps {
   flyingCards: FlyingCardAnim[];
   reactions: PlayerReaction[];
   isMuted: boolean;
+  isMusicMuted: boolean;
   volume: number;
   onToggleMute: () => void;
+  onToggleMusicMute: () => void;
   onChangeVolume: (val: number) => void;
   onPlayCard: (cardId: string, chosenColor?: ActiveColor) => void;
   onDrawCard: () => void;
@@ -73,8 +77,10 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
   flyingCards,
   reactions,
   isMuted,
+  isMusicMuted,
   volume,
   onToggleMute,
+  onToggleMusicMute,
   onChangeVolume,
   onPlayCard,
   onDrawCard,
@@ -128,7 +134,7 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
         { player: gameState.players[leftIdx], originalIndex: leftIdx, position: 'left' },
         { player: gameState.players[rightIdx], originalIndex: rightIdx, position: 'right' }
       );
-    } else if (total >= 4) {
+    } else if (total === 4) {
       const leftIdx = (safeIdx + 1) % total;
       const topIdx = (safeIdx + 2) % total;
       const rightIdx = (safeIdx + 3) % total;
@@ -137,6 +143,15 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
         { player: gameState.players[topIdx], originalIndex: topIdx, position: 'top' },
         { player: gameState.players[rightIdx], originalIndex: rightIdx, position: 'right' }
       );
+    } else if (total > 4) {
+      for (let step = 1; step < total; step++) {
+        const oppIdx = (safeIdx + step) % total;
+        opponents.push({
+          player: gameState.players[oppIdx],
+          originalIndex: oppIdx,
+          position: 'top',
+        });
+      }
     }
 
     return {
@@ -146,7 +161,9 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
     };
   }, [gameState.players, localPlayerId]);
 
+  const isMassiveRoom = gameState.players.length > 4;
   const isLocalTurn = gameState.currentTurnIndex === localPlayerIndex;
+  const activeTurnPlayer = gameState.players[gameState.currentTurnIndex];
   const topDiscardCard =
     gameState.discardPile[gameState.discardPile.length - 1];
   const visibleDiscardStack = gameState.discardPile.slice(-7);
@@ -192,11 +209,77 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
   }, [isLocalTurn, onDrawCard, onCallRiesgoControlado, onToggleMute]);
 
   // Mostrar botón táctico "¡RIESGO CONTROLADO!" cuando quedan <= 2 cartas y no se ha pulsado aún
-  const showRiesgoControladoButton =
+  const showRiesgoControladoButton = Boolean(
     localPlayer &&
-    ((localPlayer.hand.length === 2 && isLocalTurn && !localPlayer.calledUno) ||
-      (localPlayer.hand.length === 1 && !localPlayer.calledUno) ||
-      gameState.unoPendingPlayerId === localPlayer.id);
+      ((localPlayer.hand.length === 2 && isLocalTurn && !localPlayer.calledUno) ||
+        (localPlayer.hand.length === 1 && !localPlayer.calledUno) ||
+        gameState.unoPendingPlayerId === localPlayer.id)
+  );
+
+  // ==================== MOTOR REACTIVO DE EFECTOS DE SONIDO POR EVENTO EN MESA ====================
+  const prevTopCardIdRef = useRef<string | undefined>(topDiscardCard?.id);
+  const prevTurnFlagRef = useRef<boolean>(isLocalTurn);
+  const prevRiesgoBtnRef = useRef<boolean>(showRiesgoControladoButton);
+  const prevShieldIdRef = useRef<string | null>(null);
+  const prevStatusRef = useRef<string>(gameState.status);
+
+  // 1. Impacto en mesa + efecto específico por carta especial lanzada (funciona para Host, IA y Clientes WebRTC)
+  useEffect(() => {
+    if (topDiscardCard && topDiscardCard.id !== prevTopCardIdRef.current) {
+      soundEngine.playCardSlap();
+      if (topDiscardCard.type === 'skip') {
+        soundEngine.playLotoLock();
+      } else if (topDiscardCard.type === 'reverse') {
+        soundEngine.playAuditReverse();
+      } else if (topDiscardCard.type === 'draw2') {
+        soundEngine.playHazardAlarm('warning');
+      } else if (topDiscardCard.type === 'wild4') {
+        soundEngine.playHazardAlarm('critical');
+      }
+    }
+    prevTopCardIdRef.current = topDiscardCard?.id;
+  }, [topDiscardCard]);
+
+  // 2. Notificación al iniciar el turno del jugador local
+  useEffect(() => {
+    if (isLocalTurn && !prevTurnFlagRef.current && gameState.status === 'playing') {
+      soundEngine.playTurnNotification();
+    }
+    prevTurnFlagRef.current = isLocalTurn;
+  }, [isLocalTurn, gameState.status]);
+
+  // 3. Alerta cuando aparece el botón de emergencia "¡Riesgo Controlado!"
+  useEffect(() => {
+    if (showRiesgoControladoButton && !prevRiesgoBtnRef.current) {
+      soundEngine.playRiesgoControladoAlert();
+    }
+    prevRiesgoBtnRef.current = showRiesgoControladoButton;
+  }, [showRiesgoControladoButton]);
+
+  // 4. Apertura y tics finales del Escudo Preventivo (10s)
+  useEffect(() => {
+    const ch = gameState.shieldChallenge;
+    const key = ch ? `${ch.targetPlayerId}-${ch.question.id}` : null;
+    if (key && key !== prevShieldIdRef.current) {
+      soundEngine.playShieldOpen();
+    }
+    if (ch && ch.timeLeft > 0 && ch.timeLeft <= 3) {
+      soundEngine.playTickWarning();
+    }
+    prevShieldIdRef.current = key;
+  }, [gameState.shieldChallenge]);
+
+  // 5. Sonido de fin de partida (Victoria vs Derrota/Cierre)
+  useEffect(() => {
+    if (gameState.status === 'finished' && prevStatusRef.current !== 'finished') {
+      if (gameState.winnerId === localPlayerId) {
+        soundEngine.playVictoryFanfare();
+      } else {
+        soundEngine.playMatchEndOther();
+      }
+    }
+    prevStatusRef.current = gameState.status;
+  }, [gameState.status, gameState.winnerId, localPlayerId]);
 
   // Calcular capas visibles del Mazo 3D según cartas restantes
   const deckThicknessLayers = Math.max(
@@ -260,47 +343,76 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
       <div className="relative z-30 h-2 sm:h-2.5 w-full bg-hazard-stripes opacity-90 shrink-0 shadow" />
 
       {/* ================= BARRA SUPERIOR DE CONTROLES COMPACTOS ================= */}
-      <header className="relative z-30 flex items-center justify-between px-2.5 sm:px-5 py-1.5 sm:py-2 bg-slate-950/75 backdrop-blur-md border-b border-white/10 shrink-0">
+      <header className="relative z-30 flex items-center justify-between gap-1 px-2 sm:px-5 py-1.5 sm:py-2 bg-slate-950/75 backdrop-blur-md border-b border-white/10 shrink-0">
         {/* Izquierda: Salida al Lobby + Código de Sala + Color Activo */}
-        <div className="flex items-center gap-1.5 sm:gap-3">
+        <div className="flex items-center gap-1 sm:gap-3 min-w-0">
           <button
             type="button"
-            onClick={onLeaveToLobby}
-            className="px-2 sm:px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-red-950/80 border border-slate-700 hover:border-red-500/60 text-xs font-bold text-slate-200 flex items-center gap-1.5 transition-colors"
+            onClick={() => {
+              soundEngine.playUiClick();
+              onLeaveToLobby();
+            }}
+            className="px-1.5 sm:px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-red-950/80 border border-slate-700 hover:border-red-500/60 text-xs font-bold text-slate-200 flex items-center gap-1.5 transition-colors shrink-0"
             title="Salir al Lobby"
           >
             <LogOut className="w-3.5 h-3.5 text-red-400" />
             <span className="hidden sm:inline">Salir</span>
           </button>
 
-          <div className="px-2 sm:px-2.5 py-1 rounded-xl bg-slate-900/90 border border-amber-500/30 flex items-center gap-1.5">
+          <div className="px-1.5 sm:px-2.5 py-1 rounded-xl bg-slate-900/90 border border-amber-500/30 flex items-center gap-1.5 shrink-0">
             <span className="text-[10px] font-mono uppercase text-slate-400 hidden md:inline">
               SALA:
             </span>
-            <span className="text-[11px] sm:text-xs font-mono font-black tracking-wider text-amber-400 whitespace-nowrap">
+            <span className="text-[10px] sm:text-xs font-mono font-black tracking-wider text-amber-400 whitespace-nowrap">
               {gameState.roomCode}
             </span>
           </div>
 
           {/* Indicador de Riesgo Activo ISO 7010 */}
-          <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-1 rounded-xl bg-slate-900/90 border border-white/15">
+          <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-2.5 py-1 rounded-xl bg-slate-900/90 border border-white/15 min-w-0">
             <span
               className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full animate-pulse shadow shrink-0"
               style={{ backgroundColor: activeColorMeta.hex }}
             />
-            <span className="text-[9px] sm:text-xs font-extrabold uppercase tracking-wider text-white truncate max-w-[125px] sm:max-w-none">
+            <span className="sm:hidden text-[9px] font-extrabold uppercase tracking-wider text-white truncate">
+              {activeColorMeta.name}
+            </span>
+            <span className="hidden sm:inline text-xs font-extrabold uppercase tracking-wider text-white">
               {activeColorMeta.shortLabel}
             </span>
           </div>
         </div>
 
-        {/* Derecha: Libro Cómo Jugar + Audio + Historial */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        {/* Derecha: Libro Cómo Jugar + Música + Audio + Historial */}
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           {/* Mini imagen con forma de libro para abrir las instrucciones */}
-          <BookGuideButton compact onClick={() => setIsBookOpen(true)} />
+          <BookGuideButton
+            compact
+            onClick={() => {
+              soundEngine.playModalOpen();
+              setIsBookOpen(true);
+            }}
+          />
+
+          {/* Control de Música de Fondo */}
+          <button
+            type="button"
+            onClick={onToggleMusicMute}
+            className={`px-1.5 sm:px-2 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1 transition-colors ${
+              isMuted || isMusicMuted
+                ? 'bg-slate-900/90 border-slate-700 text-slate-400 hover:text-slate-200'
+                : 'bg-amber-400/15 border-amber-400/50 text-amber-300 hover:bg-amber-400/25'
+            }`}
+            title={isMusicMuted ? 'Activar música de fondo' : 'Silenciar música de fondo'}
+          >
+            <Music className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">
+              {isMuted || isMusicMuted ? 'Música OFF' : 'Música'}
+            </span>
+          </button>
 
           {/* Control de Audio y Volumen */}
-          <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 rounded-xl px-2 sm:px-2.5 py-1">
+          <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-700/80 rounded-xl px-1.5 sm:px-2.5 py-1.5 sm:py-1">
             <button
               type="button"
               onClick={onToggleMute}
@@ -308,9 +420,9 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
               title={isMuted ? 'Activar sonido' : 'Silenciar sonido (M)'}
             >
               {isMuted ? (
-                <VolumeX className="w-4 h-4 text-red-400" />
+                <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-400" />
               ) : (
-                <Volume2 className="w-4 h-4 text-emerald-400" />
+                <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
               )}
             </button>
             <input
@@ -328,7 +440,15 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
           {/* Botón de Panel Lateral (Historial y Reacciones) */}
           <button
             type="button"
-            onClick={() => setIsSidePanelOpen(!isSidePanelOpen)}
+            onClick={() => {
+              const nextOpen = !isSidePanelOpen;
+              if (nextOpen) {
+                soundEngine.playModalOpen();
+              } else {
+                soundEngine.playModalClose();
+              }
+              setIsSidePanelOpen(nextOpen);
+            }}
             className={`px-2 sm:px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all ${
               isSidePanelOpen
                 ? 'bg-amber-400 text-slate-950 border-amber-300'
@@ -341,9 +461,9 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
         </div>
       </header>
 
-      {/* ================= PÍLDORA FORMATIVA NO INTRUSIVA (ESCRITORIO: ESQUINA SUPERIOR IZQUIERDA) ================= */}
+      {/* ================= PÍLDORA FORMATIVA NO INTRUSIVA (ESCRITORIO: ESQUINA EN SALAS 2-4 JUGADORES) ================= */}
       <AnimatePresence mode="wait">
-        {gameState.educationalPill && (
+        {gameState.educationalPill && !isMassiveRoom && (
           <motion.div
             key={gameState.educationalPill.id}
             initial={{ opacity: 0, y: -10 }}
@@ -375,71 +495,114 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
 
       {/* ================= ÁREA CENTRAL DE LA MESA (ASIENTOS RIVALES + CENTRO 3D) ================= */}
       <main className="relative z-10 flex-1 w-full max-w-7xl mx-auto flex flex-col items-center justify-between px-2 sm:px-6 py-1 sm:py-2 min-h-0">
-        {/* MÓVIL (< 768px): FILA COMPACTA SUPERIOR CON TODOS LOS RIVALES PARA DEJAR EL CENTRO 100% DESPEJADO */}
-        <div className="w-full flex md:hidden items-start justify-around gap-1 pt-0.5 shrink-0">
-          {relativeOpponents.map((opp) => (
-            <PlayerSeat
-              key={opp.player.id}
-              player={opp.player}
-              position="top"
-              isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
-              turnTimeLeft={gameState.turnTimeLeft}
-              activeColor={gameState.activeColor}
-              reactions={reactions}
-            />
-          ))}
-        </div>
-
-        {/* MÓVIL (< 768px): PÍLDORA FORMATIVA COMPACTA NO INTRUSIVA */}
-        {gameState.educationalPill && (
-          <div className="w-full md:hidden px-2 mt-0.5 shrink-0">
-            <div className="px-2.5 py-1 rounded-xl bg-slate-950/85 border border-amber-400/35 flex items-center gap-2">
-              <Info className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-              <p className="text-[10px] text-slate-200 truncate">
-                <strong className="text-amber-300 font-mono mr-1">
-                  [{gameState.educationalPill.isoCode}]
-                </strong>
-                {gameState.educationalPill.tip}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* ESCRITORIO (>= 768px): ASIENTO RIVAL SUPERIOR (Top) */}
-        <div className="hidden md:flex w-full items-center justify-center min-h-[96px]">
-          {relativeOpponents
-            .filter((o) => o.position === 'top')
-            .map((opp) => (
-              <PlayerSeat
-                key={opp.player.id}
-                player={opp.player}
-                position="top"
-                isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
-                turnTimeLeft={gameState.turnTimeLeft}
-                activeColor={gameState.activeColor}
-                reactions={reactions}
-              />
-            ))}
-        </div>
-
-        {/* FILA MEDIA: ASIENTO IZQUIERDO (PC) + CENTRO DE LA MESA (ANILLO NEÓN, MAZO 3D, DESCARTE) + ASIENTO DERECHO (PC) */}
-        <div className="w-full flex-1 flex items-center justify-center md:justify-between gap-2 sm:gap-6 min-h-0">
-          {/* ASIENTO RIVAL IZQUIERDO (Solo Escritorio) */}
-          <div className="hidden md:flex items-center justify-start min-w-[160px]">
-            {relativeOpponents
-              .filter((o) => o.position === 'left')
-              .map((opp) => (
+        {/* MODO MASIVO (5 A 15 JUGADORES): REJILLA SUPERIOR TÁCTICA COMPACTA PARA TODOS LOS RIVALES */}
+        {isMassiveRoom ? (
+          <>
+            <div className="w-full max-w-6xl mx-auto grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-1 sm:gap-1.5 pt-0.5 shrink-0">
+              {relativeOpponents.map((opp) => (
                 <PlayerSeat
                   key={opp.player.id}
                   player={opp.player}
-                  position="left"
+                  position="top"
+                  compact={true}
                   isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
-                  turnTimeLeft={gameState.turnTimeLeft}
                   activeColor={gameState.activeColor}
                   reactions={reactions}
                 />
               ))}
-          </div>
+            </div>
+
+            {gameState.educationalPill && (
+              <div className="w-full max-w-2xl mx-auto px-1 mt-1 shrink-0">
+                <div className="px-2.5 py-1 rounded-xl bg-slate-950/85 border border-amber-400/35 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Info className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                    <p className="text-[10px] sm:text-[11px] text-slate-200 truncate">
+                      <strong className="text-amber-300 font-mono mr-1">
+                        [{gameState.educationalPill.isoCode}]
+                      </strong>
+                      {gameState.educationalPill.tip}
+                    </p>
+                  </div>
+                  <span className="text-[9px] font-mono font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded shrink-0">
+                    {gameState.players.length} EN MESA
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {/* MODO CLÁSICO (2 A 4 JUGADORES) - MÓVIL (< 768px): FILA COMPACTA SUPERIOR */}
+            <div className="w-full flex md:hidden items-start justify-around gap-1 pt-0.5 shrink-0">
+              {relativeOpponents.map((opp) => (
+                <PlayerSeat
+                  key={opp.player.id}
+                  player={opp.player}
+                  position="top"
+                  isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
+                  activeColor={gameState.activeColor}
+                  reactions={reactions}
+                />
+              ))}
+            </div>
+
+            {/* MÓVIL (< 768px): PÍLDORA FORMATIVA COMPACTA NO INTRUSIVA */}
+            {gameState.educationalPill && (
+              <div className="w-full md:hidden px-2 mt-0.5 shrink-0">
+                <div className="px-2.5 py-1 rounded-xl bg-slate-950/85 border border-amber-400/35 flex items-center gap-2">
+                  <Info className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                  <p className="text-[10px] text-slate-200 truncate">
+                    <strong className="text-amber-300 font-mono mr-1">
+                      [{gameState.educationalPill.isoCode}]
+                    </strong>
+                    {gameState.educationalPill.tip}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* ESCRITORIO (>= 768px): ASIENTO RIVAL SUPERIOR (Top) */}
+            <div className="hidden md:flex w-full items-center justify-center min-h-[96px]">
+              {relativeOpponents
+                .filter((o) => o.position === 'top')
+                .map((opp) => (
+                  <PlayerSeat
+                    key={opp.player.id}
+                    player={opp.player}
+                    position="top"
+                    isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
+                    activeColor={gameState.activeColor}
+                    reactions={reactions}
+                  />
+                ))}
+            </div>
+          </>
+        )}
+
+        {/* FILA MEDIA: ASIENTO IZQUIERDO (PC 2-4) + CENTRO DE LA MESA (ANILLO NEÓN, MAZO 3D, DESCARTE) + ASIENTO DERECHO (PC 2-4) */}
+        <div
+          className={`w-full flex-1 flex items-center ${
+            isMassiveRoom ? 'justify-center' : 'justify-center md:justify-between'
+          } gap-2 sm:gap-6 min-h-0`}
+        >
+          {/* ASIENTO RIVAL IZQUIERDO (Solo Escritorio en partidas 2-4) */}
+          {!isMassiveRoom && (
+            <div className="hidden md:flex items-center justify-start min-w-[160px]">
+              {relativeOpponents
+                .filter((o) => o.position === 'left')
+                .map((opp) => (
+                  <PlayerSeat
+                    key={opp.player.id}
+                    player={opp.player}
+                    position="left"
+                    isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
+                    activeColor={gameState.activeColor}
+                    reactions={reactions}
+                  />
+                ))}
+            </div>
+          )}
 
           {/* ================= CENTRO DE LA MESA: ANILLO NEÓN + MAZO 3D + PILA DE DESCARTE ================= */}
           <div className="relative flex items-center justify-center my-auto">
@@ -462,7 +625,11 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                 boxShadow: `0 0 45px ${activeColorMeta.glowHex}, inset 0 0 30px ${activeColorMeta.glowHex}`,
                 borderColor: activeColorMeta.hex,
               }}
-              className="relative w-[210px] h-[210px] sm:w-[275px] sm:h-[275px] md:w-[310px] md:h-[310px] rounded-full border-[3px] sm:border-4 border-dashed flex items-center justify-center pointer-events-none transition-colors duration-500"
+              className={`relative ${
+                isMassiveRoom
+                  ? 'w-[195px] h-[195px] sm:w-[235px] sm:h-[235px] md:w-[255px] md:h-[255px]'
+                  : 'w-[210px] h-[210px] sm:w-[275px] sm:h-[275px] md:w-[310px] md:h-[310px]'
+              } rounded-full border-[3px] sm:border-4 border-dashed flex items-center justify-center pointer-events-none transition-colors duration-500`}
             >
               {/* Indicadores direccionales de giro en el anillo */}
               <div
@@ -472,9 +639,13 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                 {gameState.direction === 1 ? '↻ SENTIDO HORARIO' : '↺ AUDITORÍA INVERSA'}
               </div>
               <div
-                className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-slate-950 shadow"
+                className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-slate-950 shadow whitespace-nowrap"
                 style={{ backgroundColor: activeColorMeta.hex }}
-              />
+              >
+                {isMassiveRoom && activeTurnPlayer
+                  ? `TURNO: ${activeTurnPlayer.name.replace(/\s*\(.*?\)/, '')}`
+                  : ''}
+              </div>
             </motion.div>
 
             {/* CONTENEDOR DE MAZO DE ROBO 3D Y PILA DE DESCARTE REALISTA */}
@@ -595,6 +766,13 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                 const targetTransform =
                   fc.toPlayerIndex === localPlayerIndex
                     ? { x: 0, y: 160, rotateY: 180, scale: 1.05 }
+                    : isMassiveRoom
+                    ? {
+                        x: ((fc.toPlayerIndex % 5) - 2) * (isMobileViewport ? 48 : 85),
+                        y: -155,
+                        rotateY: 0,
+                        scale: 0.65,
+                      }
                     : fc.toPlayerIndex === 1
                     ? { x: isMobileViewport ? -110 : -200, y: isMobileViewport ? -140 : 0, rotateY: 0, scale: 0.75 }
                     : fc.toPlayerIndex === 2
@@ -617,22 +795,23 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
             </AnimatePresence>
           </div>
 
-          {/* ASIENTO RIVAL DERECHO (Solo Escritorio) */}
-          <div className="hidden md:flex items-center justify-end min-w-[160px]">
-            {relativeOpponents
-              .filter((o) => o.position === 'right')
-              .map((opp) => (
-                <PlayerSeat
-                  key={opp.player.id}
-                  player={opp.player}
-                  position="right"
-                  isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
-                  turnTimeLeft={gameState.turnTimeLeft}
-                  activeColor={gameState.activeColor}
-                  reactions={reactions}
-                />
-              ))}
-          </div>
+          {/* ASIENTO RIVAL DERECHO (Solo Escritorio en partidas 2-4) */}
+          {!isMassiveRoom && (
+            <div className="hidden md:flex items-center justify-end min-w-[160px]">
+              {relativeOpponents
+                .filter((o) => o.position === 'right')
+                .map((opp) => (
+                  <PlayerSeat
+                    key={opp.player.id}
+                    player={opp.player}
+                    position="right"
+                    isCurrentTurn={gameState.currentTurnIndex === opp.originalIndex}
+                    activeColor={gameState.activeColor}
+                    reactions={reactions}
+                  />
+                ))}
+            </div>
+          )}
         </div>
 
         {/* ================= ZONA INFERIOR: HUD DEL JUGADOR LOCAL, PULSADOR "¡RIESGO CONTROLADO!" Y ABANICO FÍSICO ================= */}
@@ -695,7 +874,7 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                       : 'bg-slate-800 text-slate-400'
                   }`}
                 >
-                  {isLocalTurn ? `TU TURNO · ${gameState.turnTimeLeft}s` : 'ESPERANDO TURNO'}
+                  {isLocalTurn ? 'TU TURNO' : 'ESPERANDO TURNO'}
                 </span>
               </div>
 
@@ -828,7 +1007,10 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setIsSidePanelOpen(false)}
+                onClick={() => {
+                  soundEngine.playModalClose();
+                  setIsSidePanelOpen(false);
+                }}
                 className="p-1 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -889,10 +1071,14 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
         pendingCard={pendingWildCard}
         onSelectColor={(chosenColor) => {
           if (pendingWildCard) {
+            soundEngine.playColorSelected(chosenColor);
             onPlayCard(pendingWildCard.id, chosenColor);
           }
         }}
-        onCancel={() => setPendingWildCard(null)}
+        onCancel={() => {
+          soundEngine.playModalClose();
+          setPendingWildCard(null);
+        }}
       />
 
       {/* ================= MODAL DE ESCUDO PREVENTIVO (PREGUNTA PRL 10 SEGUNDOS) ================= */}
@@ -953,7 +1139,10 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                   {!gameState.isOnlineClient && (
                     <button
                       type="button"
-                      onClick={onRematch}
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        onRematch();
+                      }}
                       className="flex-1 py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg"
                     >
                       <RotateCcw className="w-4 h-4" />
@@ -962,7 +1151,10 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
                   )}
                   <button
                     type="button"
-                    onClick={onLeaveToLobby}
+                    onClick={() => {
+                      soundEngine.playUiClick();
+                      onLeaveToLobby();
+                    }}
                     className="flex-1 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs sm:text-sm uppercase tracking-wider border border-slate-700"
                   >
                     Volver a Sala / Lobby
@@ -975,7 +1167,13 @@ export const GameTabletop: React.FC<GameTabletopProps> = ({
       </AnimatePresence>
 
       {/* ================= HOJA DE INSTRUCCIONES VISUALES (LIBRO DE REGLAS) ================= */}
-      <InstructionsBookModal isOpen={isBookOpen} onClose={() => setIsBookOpen(false)} />
+      <InstructionsBookModal
+        isOpen={isBookOpen}
+        onClose={() => {
+          soundEngine.playModalClose();
+          setIsBookOpen(false);
+        }}
+      />
     </motion.div>
   );
 };

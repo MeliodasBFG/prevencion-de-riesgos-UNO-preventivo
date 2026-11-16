@@ -193,7 +193,7 @@ export const PhysicalCard: React.FC<PhysicalCardProps> = ({
   const handlePointerEnter = () => {
     if (!interactive) return;
     setIsHovered(true);
-    soundEngine.playCardSlide();
+    soundEngine.playCardHover();
   };
 
   const handlePointerLeave = () => {
@@ -204,7 +204,7 @@ export const PhysicalCard: React.FC<PhysicalCardProps> = ({
   const handleDragStart = () => {
     if (!interactive) return;
     setIsDragging(true);
-    soundEngine.playCardSlide();
+    soundEngine.playCardGrab();
   };
 
   const handleDragEnd = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
@@ -215,6 +215,8 @@ export const PhysicalCard: React.FC<PhysicalCardProps> = ({
     // Si se arrastró hacia arriba (hacia el centro de la mesa) más de 75px
     if (info.offset.y < -70 || Math.hypot(info.offset.x, info.offset.y) > 110) {
       onPlayCard?.();
+    } else {
+      soundEngine.playCardSnapBack();
     }
   };
 
@@ -224,6 +226,7 @@ export const PhysicalCard: React.FC<PhysicalCardProps> = ({
     if (isSelected) {
       onPlayCard?.();
     } else {
+      soundEngine.playCardSelect();
       onSelect?.();
     }
   };

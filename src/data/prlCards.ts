@@ -303,129 +303,133 @@ const COLOR_NUMBER_THEMES: Record<ActiveColor, NumberCardTheme[]> = {
 };
 
 /**
- * Genera el mazo completo de UNO Preventivo (108 cartas estándar adaptadas a PRL)
+ * Genera el mazo completo de UNO Preventivo (108 cartas por baraja).
+ * Permite combinar múltiples barajas para partidas de hasta 15 jugadores.
  */
-export function generatePRLDeck(): PRLCard[] {
+export function generatePRLDeck(deckCopies: number = 1): PRLCard[] {
   const deck: PRLCard[] = [];
   const colors: ActiveColor[] = ['red', 'yellow', 'blue', 'green'];
+  const copies = Math.max(1, Math.min(4, deckCopies));
   let idCounter = 1;
 
-  for (const color of colors) {
-    const themes = COLOR_NUMBER_THEMES[color];
+  for (let d = 0; d < copies; d++) {
+    for (const color of colors) {
+      const themes = COLOR_NUMBER_THEMES[color];
 
-    // Carta 0 (1 por color)
-    const theme0 = themes[0];
-    deck.push({
-      id: `card-${idCounter++}`,
-      color,
-      type: 'number',
-      value: 0,
-      symbol: '0',
-      isoCode: theme0.isoCode,
-      iconId: theme0.iconId,
-      title: theme0.title,
-      subtitle: theme0.subtitle,
-      educationalTip: theme0.educationalTip,
-    });
+      // Carta 0 (1 por color)
+      const theme0 = themes[0];
+      deck.push({
+        id: `card-${idCounter++}`,
+        color,
+        type: 'number',
+        value: 0,
+        symbol: '0',
+        isoCode: theme0.isoCode,
+        iconId: theme0.iconId,
+        title: theme0.title,
+        subtitle: theme0.subtitle,
+        educationalTip: theme0.educationalTip,
+      });
 
-    // Cartas 1 a 9 (2 copias de cada número por color)
-    for (let num = 1; num <= 9; num++) {
-      const theme = themes[num % themes.length];
-      for (let copy = 0; copy < 2; copy++) {
+      // Cartas 1 a 9 (2 copias de cada número por color)
+      for (let num = 1; num <= 9; num++) {
+        const theme = themes[num % themes.length];
+        for (let copy = 0; copy < 2; copy++) {
+          deck.push({
+            id: `card-${idCounter++}`,
+            color,
+            type: 'number',
+            value: num,
+            symbol: String(num),
+            isoCode: theme.isoCode,
+            iconId: theme.iconId,
+            title: theme.title,
+            subtitle: theme.subtitle,
+            educationalTip: theme.educationalTip,
+          });
+        }
+      }
+
+      // 2x Salto "Consignación LOTO" por color
+      for (let i = 0; i < 2; i++) {
         deck.push({
           id: `card-${idCounter++}`,
           color,
-          type: 'number',
-          value: num,
-          symbol: String(num),
-          isoCode: theme.isoCode,
-          iconId: theme.iconId,
-          title: theme.title,
-          subtitle: theme.subtitle,
-          educationalTip: theme.educationalTip,
+          type: 'skip',
+          symbol: 'LOTO',
+          isoCode: 'ISO 14118 · LOTO',
+          iconId: 'loto-lock',
+          title: 'CONSIGNACIÓN LOTO',
+          subtitle: 'BLOQUEO DE TURNO',
+          educationalTip:
+            'LOTO (Lockout/Tagout): Bloqueo y etiquetado obligatorio de energías antes de intervenir maquinaria.',
+        });
+      }
+
+      // 2x Cambio de Sentido "Auditoría Interna" por color
+      for (let i = 0; i < 2; i++) {
+        deck.push({
+          id: `card-${idCounter++}`,
+          color,
+          type: 'reverse',
+          symbol: '⇄',
+          isoCode: 'ISO 45001 · AUD',
+          iconId: 'audit-reverse',
+          title: 'AUDITORÍA INTERNA',
+          subtitle: 'CAMBIO DE SENTIDO',
+          educationalTip:
+            'ISO 45001: Las auditorías periódicas permiten detectar desviaciones y mejorar el sistema preventivo.',
+        });
+      }
+
+      // 2x +2 "Falta de EPI" por color
+      for (let i = 0; i < 2; i++) {
+        deck.push({
+          id: `card-${idCounter++}`,
+          color,
+          type: 'draw2',
+          symbol: '+2',
+          isoCode: 'RD 773/1997 · EPI',
+          iconId: 'epi-missing',
+          title: 'FALTA DE EPI (+2)',
+          subtitle: 'INFRACCIÓN PREVENTIVA',
+          educationalTip:
+            'Falta de EPI: Trabajar sin el Equipo de Protección Individual obligatorio conlleva paralización y sanción (+2).',
         });
       }
     }
 
-    // 2x Salto "Consignación LOTO" por color
-    for (let i = 0; i < 2; i++) {
+    // 4x Comodín "Evaluación de Riesgos"
+    for (let i = 0; i < 4; i++) {
       deck.push({
         id: `card-${idCounter++}`,
-        color,
-        type: 'skip',
-        symbol: 'LOTO',
-        isoCode: 'ISO 14118 · LOTO',
-        iconId: 'loto-lock',
-        title: 'CONSIGNACIÓN LOTO',
-        subtitle: 'BLOQUEO DE TURNO',
+        color: 'wild',
+        type: 'wild',
+        symbol: 'EVAL',
+        isoCode: 'ISO 31000 · EVAL',
+        iconId: 'risk-eval',
+        title: 'EVALUACIÓN RIESGOS',
+        subtitle: 'CAMBIO DE FAMILIA PRL',
         educationalTip:
-          'LOTO (Lockout/Tagout): Bloqueo y etiquetado obligatorio de energías antes de intervenir maquinaria.',
+          'Evaluación de Riesgos: Identifica el peligro dominante en el puesto para aplicar las medidas adecuadas.',
       });
     }
 
-    // 2x Cambio de Sentido "Auditoría Interna" por color
-    for (let i = 0; i < 2; i++) {
+    // 4x Comodín +4 "Accidente Grave / Inspección"
+    for (let i = 0; i < 4; i++) {
       deck.push({
         id: `card-${idCounter++}`,
-        color,
-        type: 'reverse',
-        symbol: '⇄',
-        isoCode: 'ISO 45001 · AUD',
-        iconId: 'audit-reverse',
-        title: 'AUDITORÍA INTERNA',
-        subtitle: 'CAMBIO DE SENTIDO',
+        color: 'wild',
+        type: 'wild4',
+        symbol: '+4',
+        isoCode: 'INSPECCIÓN · +4',
+        iconId: 'severe-accident',
+        title: 'INSPECCIÓN / GRAVE',
+        subtitle: 'ACTA DE INFRACCIÓN +4',
         educationalTip:
-          'ISO 45001: Las auditorías periódicas permiten detectar desviaciones y mejorar el sistema preventivo.',
+          'Inspección de Trabajo: Un riesgo grave e inminente implica paralización inmediata de trabajos (+4 cartas).',
       });
     }
-
-    // 2x +2 "Falta de EPI" por color
-    for (let i = 0; i < 2; i++) {
-      deck.push({
-        id: `card-${idCounter++}`,
-        color,
-        type: 'draw2',
-        symbol: '+2',
-        isoCode: 'RD 773/1997 · EPI',
-        iconId: 'epi-missing',
-        title: 'FALTA DE EPI (+2)',
-        subtitle: 'INFRACCIÓN PREVENTIVA',
-        educationalTip:
-          'Falta de EPI: Trabajar sin el Equipo de Protección Individual obligatorio conlleva paralización y sanción (+2).',
-      });
-    }
-  }
-
-  // 4x Comodín "Evaluación de Riesgos"
-  for (let i = 0; i < 4; i++) {
-    deck.push({
-      id: `card-${idCounter++}`,
-      color: 'wild',
-      type: 'wild',
-      symbol: 'EVAL',
-      isoCode: 'ISO 31000 · EVAL',
-      iconId: 'risk-eval',
-      title: 'EVALUACIÓN RIESGOS',
-      subtitle: 'CAMBIO DE FAMILIA PRL',
-      educationalTip:
-        'Evaluación de Riesgos: Identifica el peligro dominante en el puesto para aplicar las medidas adecuadas.',
-    });
-  }
-
-  // 4x Comodín +4 "Accidente Grave / Inspección"
-  for (let i = 0; i < 4; i++) {
-    deck.push({
-      id: `card-${idCounter++}`,
-      color: 'wild',
-      type: 'wild4',
-      symbol: '+4',
-      isoCode: 'INSPECCIÓN · +4',
-      iconId: 'severe-accident',
-      title: 'INSPECCIÓN / GRAVE',
-      subtitle: 'ACTA DE INFRACCIÓN +4',
-      educationalTip:
-        'Inspección de Trabajo: Un riesgo grave e inminente implica paralización inmediata de trabajos (+4 cartas).',
-    });
   }
 
   return shuffleDeck(deck);

@@ -11,9 +11,10 @@ interface PlayerSeatProps {
   player: Player;
   position: 'top' | 'left' | 'right';
   isCurrentTurn: boolean;
-  turnTimeLeft: number;
+  turnTimeLeft?: number;
   activeColor: ActiveColor;
   reactions: PlayerReaction[];
+  compact?: boolean;
 }
 
 /**
@@ -48,15 +49,13 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
   player,
   position,
   isCurrentTurn,
-  turnTimeLeft,
   activeColor,
   reactions,
+  compact = false,
 }) => {
   const maxVisibleBacks = Math.min(player.hand.length, 7);
   const radius = 21;
   const circumference = 2 * Math.PI * radius;
-  const progress = Math.max(0, Math.min(1, turnTimeLeft / 15));
-  const strokeDashoffset = circumference * (1 - progress);
   const colorMeta = COLOR_METADATA[activeColor];
   const playerReactions = reactions.filter((r) => r.playerId === player.id);
 
@@ -84,13 +83,17 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
         ))}
       </AnimatePresence>
 
-      {/* Tarjeta táctica del jugador con temporizador circular de 15s */}
+      {/* Tarjeta táctica del jugador */}
       <motion.div
         animate={{
-          scale: isCurrentTurn ? 1.04 : 1,
+          scale: isCurrentTurn ? (compact ? 1.03 : 1.04) : 1,
           borderColor: isCurrentTurn ? colorMeta.hex : 'rgba(148, 163, 184, 0.22)',
         }}
-        className={`relative z-20 flex items-center gap-1.5 sm:gap-2.5 px-2 py-1 sm:px-3.5 sm:py-2 rounded-xl sm:rounded-2xl bg-[#111622]/95 backdrop-blur-md border-2 shadow-xl transition-colors ${
+        className={`relative z-20 flex items-center ${
+          compact
+            ? 'gap-1.5 px-1.5 py-1 sm:px-2.5 sm:py-1.5 rounded-xl w-full'
+            : 'gap-1.5 sm:gap-2.5 px-2 py-1 sm:px-3.5 sm:py-2 rounded-xl sm:rounded-2xl'
+        } bg-[#111622]/95 backdrop-blur-md border-2 shadow-xl transition-colors ${
           player.isConnected === false
             ? 'opacity-55 border-slate-700'
             : isCurrentTurn
@@ -98,8 +101,12 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
             : 'opacity-90'
         }`}
       >
-        {/* Avatar con Temporizador Circular SVG de 15 segundos */}
-        <div className="relative w-8 h-8 sm:w-11 sm:h-11 flex items-center justify-center shrink-0">
+        {/* Avatar con Indicador Circular de Turno Activo (sin límite de tiempo) */}
+        <div
+          className={`relative ${
+            compact ? 'w-7 h-7 sm:w-8 sm:h-8' : 'w-8 h-8 sm:w-11 sm:h-11'
+          } flex items-center justify-center shrink-0`}
+        >
           <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 48 48">
             <circle
               cx="24"
@@ -114,18 +121,21 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
                 cx="24"
                 cy="24"
                 r={radius}
-                stroke={turnTimeLeft <= 5 ? '#EF4444' : colorMeta.hex}
+                stroke={colorMeta.hex}
                 strokeWidth="3.5"
                 strokeLinecap="round"
                 fill="none"
                 strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-                className="transition-all duration-500"
+                strokeDashoffset={0}
+                className="transition-all duration-300"
               />
             )}
           </svg>
 
-          <SafetyHelmetAvatar color={player.helmetColor} className="w-5 h-5 sm:w-7 sm:h-7 relative z-10" />
+          <SafetyHelmetAvatar
+            color={player.helmetColor}
+            className={`${compact ? 'w-4 h-4 sm:w-5 sm:h-5' : 'w-5 h-5 sm:w-7 sm:h-7'} relative z-10`}
+          />
 
           {/* Candado animado de Consignación LOTO cuando el jugador es saltado */}
           <AnimatePresence>
@@ -137,14 +147,14 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
                 className="absolute inset-0 rounded-full bg-red-600/90 border-2 border-amber-300 flex items-center justify-center z-30 shadow-lg"
                 title="Turno bloqueado por Consignación LOTO"
               >
-                <Lock className="w-4 h-4 sm:w-5 sm:h-5 text-white animate-bounce" />
+                <Lock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white animate-bounce" />
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
         {/* Nombre, rol y contador de cartas */}
-        <div className="flex flex-col min-w-0 max-w-[74px] sm:max-w-[140px]">
+        <div className={`flex flex-col min-w-0 ${compact ? 'flex-1' : 'max-w-[74px] sm:max-w-[140px]'}`}>
           <div className="flex items-center gap-1">
             {player.isBot ? (
               <Bot className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-amber-400 shrink-0" />
@@ -164,12 +174,14 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
                   : 'bg-slate-800 text-amber-300 border border-amber-500/30'
               }`}
             >
-              {player.hand.length} {player.hand.length === 1 ? 'CARTA' : 'CARTAS'}
+              {compact
+                ? `${player.hand.length} ${player.hand.length === 1 ? 'C' : 'CTS'}`
+                : `${player.hand.length} ${player.hand.length === 1 ? 'CARTA' : 'CARTAS'}`}
             </span>
 
             {isCurrentTurn && (
               <span className="text-[8px] sm:text-[10px] font-mono font-bold text-amber-300">
-                {turnTimeLeft}s
+                TURNO
               </span>
             )}
             {player.isConnected === false && (
@@ -187,42 +199,44 @@ export const PlayerSeat: React.FC<PlayerSeatProps> = ({
               initial={{ scale: 0, y: 8 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0 }}
-              className="absolute -top-2.5 -right-1.5 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-red-600 text-[7px] sm:text-[9px] font-black text-white uppercase tracking-wider shadow-lg border border-white flex items-center gap-0.5"
+              className="absolute -top-2 -right-1 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-red-600 text-[7px] sm:text-[8px] font-black text-white uppercase tracking-wider shadow-lg border border-white flex items-center gap-0.5"
             >
               <ShieldAlert className="w-2.5 h-2.5" />
-              <span>CONTROLADO</span>
+              <span>{compact ? 'OK' : 'CONTROLADO'}</span>
             </motion.div>
           )}
         </AnimatePresence>
       </motion.div>
 
-      {/* Abanico físico de cartas ocultas (Dorso) en tiempo real */}
-      <div className="relative h-8 sm:h-12 flex items-center justify-center mt-0.5 sm:mt-1 pointer-events-none scale-75 sm:scale-100 origin-top">
-        {Array.from({ length: maxVisibleBacks }).map((_, idx) => {
-          const mid = (maxVisibleBacks - 1) / 2;
-          const offsetIdx = idx - mid;
-          const angle = offsetIdx * 7;
-          const translateY = Math.abs(offsetIdx) * 1.5;
-          return (
-            <motion.div
-              key={`${player.id}-back-${idx}`}
-              initial={{ scale: 0.7, opacity: 0 }}
-              animate={{
-                scale: 1,
-                opacity: 1,
-                rotateZ: angle,
-                x: offsetIdx * -11,
-                y: translateY,
-              }}
-              transition={{ type: 'spring', stiffness: 300, damping: 24 }}
-              style={{ zIndex: idx }}
-              className="-mx-2.5 sm:-mx-3"
-            >
-              <CardBackFace size="xs" />
-            </motion.div>
-          );
-        })}
-      </div>
+      {/* Abanico físico de cartas ocultas (Dorso) en tiempo real para partidas de 2 a 4 jugadores */}
+      {!compact && (
+        <div className="relative h-8 sm:h-12 flex items-center justify-center mt-0.5 sm:mt-1 pointer-events-none scale-75 sm:scale-100 origin-top">
+          {Array.from({ length: maxVisibleBacks }).map((_, idx) => {
+            const mid = (maxVisibleBacks - 1) / 2;
+            const offsetIdx = idx - mid;
+            const angle = offsetIdx * 7;
+            const translateY = Math.abs(offsetIdx) * 1.5;
+            return (
+              <motion.div
+                key={`${player.id}-back-${idx}`}
+                initial={{ scale: 0.7, opacity: 0 }}
+                animate={{
+                  scale: 1,
+                  opacity: 1,
+                  rotateZ: angle,
+                  x: offsetIdx * -11,
+                  y: translateY,
+                }}
+                transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+                style={{ zIndex: idx }}
+                className="-mx-2.5 sm:-mx-3"
+              >
+                <CardBackFace size="xs" />
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

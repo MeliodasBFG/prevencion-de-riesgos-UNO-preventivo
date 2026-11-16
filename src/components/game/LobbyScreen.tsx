@@ -15,6 +15,7 @@ import {
   BookOpen,
   Volume2,
   VolumeX,
+  Music,
   RotateCcw,
   LogOut,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ import { SafetyHelmetAvatar } from './PlayerSeat';
 import { IsoPictogram } from './IsoPictogram';
 import { BookGuideButton, InstructionsBookModal } from './InstructionsBookModal';
 import { Player } from '@/hooks/useMultiplayer';
+import { soundEngine } from '@/lib/soundEngine';
 
 interface LobbyScreenProps {
   roomCode: string;
@@ -44,7 +46,9 @@ interface LobbyScreenProps {
   onlinePlayers: Player[];
   lastJoinedRoomCode?: string | null;
   isMuted: boolean;
+  isMusicMuted: boolean;
   onToggleMute: () => void;
+  onToggleMusicMute: () => void;
   onStartTraining: (botCount: number, bots: BotProfileId[]) => void;
   onCreateOnlineRoom: () => void;
   onJoinOnlineRoom: (code: string) => void;
@@ -74,7 +78,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onlinePlayers,
   lastJoinedRoomCode,
   isMuted,
+  isMusicMuted,
   onToggleMute,
+  onToggleMusicMute,
   onStartTraining,
   onCreateOnlineRoom,
   onJoinOnlineRoom,
@@ -107,6 +113,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   }, []);
 
   const handleCopyCode = () => {
+    soundEngine.playShieldSuccess();
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       navigator.clipboard.writeText(roomCode);
       setCopiedCode(true);
@@ -115,6 +122,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   };
 
   const handleCopyInviteLink = () => {
+    soundEngine.playShieldSuccess();
     if (typeof window !== 'undefined' && navigator.clipboard) {
       const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(
         roomCode
@@ -126,6 +134,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   };
 
   const handleBotProfileCycle = (slotIndex: number) => {
+    soundEngine.playUiClick();
     const order: BotProfileId[] = ['prudente', 'auditor', 'temerario'];
     setSelectedBots((prev) => {
       const next = [...prev];
@@ -178,13 +187,33 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             </div>
           </div>
 
-          {/* Botones de Instrucciones (Libro) y Sonido en el Lobby */}
-          <div className="flex items-center gap-2.5">
-            <BookGuideButton onClick={() => setIsBookOpen(true)} />
+          {/* Botones de Instrucciones (Libro), Música de Fondo y Audio en el Lobby */}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <BookGuideButton
+              onClick={() => {
+                soundEngine.playModalOpen();
+                setIsBookOpen(true);
+              }}
+            />
 
             <button
+              type="button"
+              onClick={onToggleMusicMute}
+              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                isMuted || isMusicMuted
+                  ? 'bg-slate-900/90 border-slate-700 text-slate-400 hover:bg-slate-800'
+                  : 'bg-amber-400/15 border-amber-400/50 text-amber-300 hover:bg-amber-400/25'
+              }`}
+              title={isMusicMuted ? 'Activar música de fondo' : 'Silenciar música de fondo'}
+            >
+              <Music className="w-4 h-4" />
+              <span>{isMuted || isMusicMuted ? 'Música OFF' : 'Música ON'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onToggleMute}
-              className="px-3.5 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-slate-200 flex items-center gap-2 transition-colors"
+              className="px-3 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-slate-200 flex items-center gap-1.5 transition-colors"
             >
               {isMuted ? (
                 <>
@@ -194,7 +223,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               ) : (
                 <>
                   <Volume2 className="w-4 h-4 text-emerald-400" />
-                  <span>Audio Procedural Activo</span>
+                  <span>Efectos ON</span>
                 </>
               )}
             </button>
@@ -247,7 +276,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                     <button
                       key={hc.hex}
                       type="button"
-                      onClick={() => setLocalHelmetColor(hc.hex)}
+                      onClick={() => {
+                        soundEngine.playUiClick();
+                        setLocalHelmetColor(hc.hex);
+                      }}
                       className={`flex items-center gap-2 p-2 rounded-xl border text-left transition-all ${
                         localHelmetColor === hc.hex
                           ? 'bg-slate-800 border-amber-400 ring-1 ring-amber-400/50'
@@ -285,7 +317,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                   type="button"
                   role="switch"
                   aria-checked={shieldModeEnabled}
-                  onClick={() => setShieldMode(!shieldModeEnabled)}
+                  onClick={() => {
+                    soundEngine.playUiClick();
+                    setShieldMode(!shieldModeEnabled);
+                  }}
                   className={`w-12 h-6 rounded-full transition-colors p-0.5 shrink-0 ${
                     shieldModeEnabled ? 'bg-emerald-500' : 'bg-slate-700'
                   }`}
@@ -307,7 +342,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <div className="flex flex-wrap gap-2 mb-5 border-b border-slate-800 pb-3">
                 <button
                   type="button"
-                  onClick={() => setActiveTab('ai')}
+                  onClick={() => {
+                    soundEngine.playTabSwitch();
+                    setActiveTab('ai');
+                  }}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all ${
                     activeTab === 'ai'
                       ? 'bg-[#F7B500] text-slate-950 shadow-[0_0_20px_rgba(247,181,0,0.35)]'
@@ -320,7 +358,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setActiveTab('online')}
+                  onClick={() => {
+                    soundEngine.playTabSwitch();
+                    setActiveTab('online');
+                  }}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all ${
                     activeTab === 'online'
                       ? 'bg-[#005A9C] text-white shadow-[0_0_20px_rgba(0,90,156,0.45)]'
@@ -333,7 +374,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setActiveTab('manual')}
+                  onClick={() => {
+                    soundEngine.playTabSwitch();
+                    setActiveTab('manual');
+                  }}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black uppercase tracking-wider transition-all ${
                     activeTab === 'manual'
                       ? 'bg-emerald-600 text-white'
@@ -359,33 +403,36 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           SIMULACIÓN TÁCTICA INMEDIATA
                         </span>
                         <h3 className="text-base sm:text-lg font-black text-white uppercase">
-                          Configura tus Rivales de IA (1 a 3 Bots)
+                          Configura tus Rivales de IA (hasta 15 jugadores)
                         </h3>
                       </div>
 
-                      {/* Selector de cantidad de bots */}
-                      <div className="flex items-center gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800">
-                        {[1, 2, 3].map((num) => (
+                      {/* Selector de cantidad de bots (1 a 14 bots = 2 a 15 jugadores) */}
+                      <div className="flex flex-wrap items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
+                        {[1, 2, 3, 7, 14].map((num) => (
                           <button
                             key={num}
                             type="button"
-                            onClick={() => setBotCount(num)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${
+                            onClick={() => {
+                              soundEngine.playUiClick();
+                              setBotCount(num);
+                            }}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-black transition-all ${
                               botCount === num
                                 ? 'bg-amber-400 text-slate-950'
                                 : 'text-slate-300 hover:text-white'
                             }`}
                           >
-                            {num} {num === 1 ? 'Bot' : 'Bots'}
+                            {num === 1 ? '1 Bot' : num === 14 ? '14 Bots (15p)' : `${num} Bots`}
                           </button>
                         ))}
                       </div>
                     </div>
 
                     {/* Tarjetas de perfiles de IA */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
-                      {Array.from({ length: botCount }).map((_, idx) => {
-                        const profileId = selectedBots[idx];
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                      {Array.from({ length: Math.min(botCount, 3) }).map((_, idx) => {
+                        const profileId = selectedBots[idx % selectedBots.length];
                         const profile = BOT_PROFILES[profileId];
                         return (
                           <div
@@ -396,7 +443,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             <div>
                               <div className="flex items-center justify-between gap-2 mb-2">
                                 <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-amber-300">
-                                  ASIENTO #{idx + 2}
+                                  {botCount > 3 ? `PLANTILLA #${idx + 1}` : `ASIENTO #${idx + 2}`}
                                 </span>
                                 <span className="text-[10px] font-semibold text-slate-400 group-hover:text-amber-300">
                                   Cambiar perfil ↻
@@ -426,6 +473,17 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         );
                       })}
                     </div>
+
+                    {botCount > 3 && (
+                      <div className="mb-4 px-3.5 py-2 rounded-xl bg-amber-400/10 border border-amber-400/35 text-xs text-amber-200 flex items-center justify-between">
+                        <span>
+                          Mesa ampliada: <strong>{botCount + 1} jugadores totales</strong> ({botCount} Bots rotando perfiles).
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-amber-300">
+                          {botCount + 1 <= 9 ? '2 BARAJAS (216 CARTAS)' : '3 BARAJAS (324 CARTAS)'}
+                        </span>
+                      </div>
+                    )}
 
                     <button
                       type="button"
@@ -464,7 +522,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             Crear Sala con Código
                           </h4>
                           <p className="text-xs text-slate-400 mb-3">
-                            Comparte el código de 6 caracteres o el enlace directo para jugar en tiempo real.
+                            Comparte el código de 6 caracteres o el enlace directo para jugar de 2 a 15 personas en tiempo real.
                           </p>
 
                           {/* Código de Sala Generado */}
@@ -515,9 +573,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           {isOnlineHost && (
                             <div className="mb-3 p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
                               <p className="text-[10px] font-mono uppercase text-slate-400 mb-1.5">
-                                ASIENTOS EN SALA ({onlinePlayers.length}/4):
+                                ASIENTOS EN SALA ({onlinePlayers.length}/15):
                               </p>
-                              <div className="space-y-1">
+                              <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
                                 {onlinePlayers.map((p, idx) => (
                                   <div
                                     key={p.id}
@@ -612,10 +670,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                           {isOnlineClient && connectionStatus === 'connected' && (
                             <div className="mb-3 p-2.5 rounded-xl bg-emerald-950/35 border border-emerald-500/40 space-y-2">
                               <p className="text-xs text-emerald-400 font-bold">
-                                ¡Conectado a la sala! Esperando a que el anfitrión inicie la partida...
+                                ¡Conectado a la sala ({onlinePlayers.length}/15)! Esperando inicio...
                               </p>
                               {onlinePlayers.length > 0 && (
-                                <div className="space-y-1">
+                                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
                                   {onlinePlayers.map((p, idx) => (
                                     <div
                                       key={p.id}
@@ -736,7 +794,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       <div className="relative z-10 h-3 w-full bg-hazard-stripes shrink-0" />
 
       {/* Hoja modal visual con las instrucciones sencillas */}
-      <InstructionsBookModal isOpen={isBookOpen} onClose={() => setIsBookOpen(false)} />
+      <InstructionsBookModal
+        isOpen={isBookOpen}
+        onClose={() => {
+          soundEngine.playModalClose();
+          setIsBookOpen(false);
+        }}
+      />
     </div>
   );
 };

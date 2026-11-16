@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
-import { useMultiplayer } from '@/hooks/useMultiplayer';
+import React, { useState, useCallback, useEffect } from 'react';
+import { useMultiplayer, MAX_PLAYERS_PER_ROOM } from '@/hooks/useMultiplayer';
 import { LobbyScreen } from '@/components/game/LobbyScreen';
 import { GameTabletop } from '@/components/game/GameTabletop';
 import { soundEngine } from '@/lib/soundEngine';
@@ -36,6 +36,7 @@ export default function UnoPreventivoApp() {
   } = useMultiplayer();
 
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isMusicMuted, setIsMusicMuted] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(0.7);
   const [lastBotConfig, setLastBotConfig] = useState<{
     botCount: number;
@@ -45,10 +46,44 @@ export default function UnoPreventivoApp() {
     bots: ['prudente', 'auditor', 'temerario'],
   });
 
+  // Desbloquear Web Audio API e iniciar música de fondo en el primer gesto del usuario
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleFirstGesture = () => {
+      soundEngine.unlockAndStartMusic(
+        gameState.status === 'lobby' ? 'lobby' : 'tabletop'
+      );
+    };
+    window.addEventListener('pointerdown', handleFirstGesture, { once: true });
+    window.addEventListener('keydown', handleFirstGesture, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Adaptar el ritmo de la música de fondo entre Lobby y Mesa de Juego
+  useEffect(() => {
+    soundEngine.setMusicMode(gameState.status === 'lobby' ? 'lobby' : 'tabletop');
+  }, [gameState.status]);
+
   const handleToggleMute = useCallback(() => {
     setIsMuted((prev) => {
       const next = !prev;
       soundEngine.setMuted(next);
+      if (!next) {
+        soundEngine.playUiClick();
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleMusicMute = useCallback(() => {
+    setIsMusicMuted((prev) => {
+      const next = !prev;
+      soundEngine.setMusicMuted(next);
+      soundEngine.playUiClick();
       return next;
     });
   }, []);
@@ -76,16 +111,21 @@ export default function UnoPreventivoApp() {
 
   const handleStartOnlineMatch = useCallback(
     (fillWithBots: boolean) => {
-      const humanCount = gameState.players.filter((p) => !p.isBot).length;
-      const botsNeeded = fillWithBots
-        ? Math.max(0, 4 - humanCount)
-        : Math.max(0, 2 - humanCount);
+      const humanPlayers = gameState.players.filter((p) => !p.isBot);
+      const humanCount = humanPlayers.length;
+      const targetPlayers = fillWithBots
+        ? Math.max(4, humanCount)
+        : Math.max(2, humanCount);
+      const botsNeeded = Math.max(
+        0,
+        Math.min(MAX_PLAYERS_PER_ROOM, targetPlayers) - humanCount
+      );
 
       startMatch({
         botCount: botsNeeded,
         selectedBots: ['prudente', 'auditor', 'temerario'],
         shieldMode: gameState.shieldModeEnabled,
-        existingOnlinePlayers: gameState.players.filter((p) => !p.isBot),
+        existingOnlinePlayers: humanPlayers,
       });
     },
     [startMatch, gameState.players, gameState.shieldModeEnabled]
@@ -126,7 +166,9 @@ export default function UnoPreventivoApp() {
         onlinePlayers={gameState.players}
         lastJoinedRoomCode={lastJoinedRoomCode}
         isMuted={isMuted}
+        isMusicMuted={isMusicMuted}
         onToggleMute={handleToggleMute}
+        onToggleMusicMute={handleToggleMusicMute}
         onStartTraining={handleStartTraining}
         onCreateOnlineRoom={() => createOnlineRoom(gameState.roomCode)}
         onJoinOnlineRoom={joinOnlineRoom}
@@ -146,8 +188,10 @@ export default function UnoPreventivoApp() {
       flyingCards={flyingCards}
       reactions={reactions}
       isMuted={isMuted}
+      isMusicMuted={isMusicMuted}
       volume={volume}
       onToggleMute={handleToggleMute}
+      onToggleMusicMute={handleToggleMusicMute}
       onChangeVolume={handleChangeVolume}
       onPlayCard={(cardId, chosenColor) =>
         executePlayCard(localPlayerId, cardId, chosenColor)

@@ -30,9 +30,9 @@
 4. **Audio Procedural (Web Audio API):**
    - Sintetizador propio en `src/lib/soundEngine.ts` sin archivos MP3/WAV externos: deslizamiento sobre tapete, impacto físico de carta, barajado, alarma de peligro, escudo preventivo y fanfarria de victoria.
 
-5. **Multijugador Online (PeerJS WebRTC) + IA Avanzada:**
-   - **Salas Online Serverless:** Generación de códigos de 6 caracteres (ej. `PRL-84X`) y enlace directo de invitación (`?room=PRL-84X`) mediante **PeerJS (WebRTC)** + sincronización instantánea multi-pestaña (`BroadcastChannel`), listo para funcionar en **Vercel** sin servidores dedicados.
-   - **Modo Entrenamiento vs. IA:** 1 a 3 bots con perfiles diferenciados (*Ing. Elena - Prudente*, *Inspector Marco - Auditor*, *Operario Tito - Temerario*).
+5. **Multijugador Online (PeerJS WebRTC) + IA Avanzada (2 a 15 Jugadores):**
+   - **Salas Online Serverless (hasta 15 personas):** Generación de códigos de 6 caracteres (ej. `PRL-84X`) y enlace directo de invitación (`?room=PRL-84X`) mediante **PeerJS (WebRTC)** + sincronización instantánea multi-pestaña (`BroadcastChannel`), con escalado automático del mazo hasta 3 barajas (324 cartas) y reconexión sin duplicar nombres.
+   - **Modo Entrenamiento vs. IA:** De 1 a 14 bots (hasta 15 jugadores en mesa) con perfiles diferenciados (*Ing. Elena - Prudente*, *Inspector Marco - Auditor*, *Operario Tito - Temerario*), sin límite de tiempo por turno.
 
 ---
 

@@ -118,9 +118,28 @@ type NetworkMessage =
   | { type: 'CLIENT_ANSWER_SHIELD'; playerId: string; optionIndex: number }
   | { type: 'REACTION'; reaction: PlayerReaction };
 
+export const MAX_PLAYERS_PER_ROOM = 15;
+
 const TURN_DURATION_SECONDS = 15;
 const SHIELD_DURATION_SECONDS = 10;
 const UNO_WINDOW_MS = 3500;
+
+const EXTRA_BOT_NAMES = [
+  'Téc. Sofía',
+  'Jefe Luis',
+  'Aud. Carmen',
+  'Oper. Mateo',
+  'Prev. Lucía',
+  'Sup. Diego',
+  'Ing. Alba',
+  'Téc. Raúl',
+  'Aud. Paula',
+  'Oper. Hugo',
+  'Prev. Irene',
+  'Jefe Pablo',
+  'Téc. Marta',
+  'Sup. Javier',
+];
 
 const STORAGE_PLAYER_NAME_KEY = 'unoprl_player_name';
 const STORAGE_HELMET_COLOR_KEY = 'unoprl_helmet_color';
@@ -339,6 +358,7 @@ export function useMultiplayer() {
 
   const triggerFlyingCard = useCallback(
     (from: 'deck' | 'hand', toPlayerIndex: number, faceDown = true, card?: PRLCard) => {
+      soundEngine.playCardDeal();
       const animId = `fly-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       setFlyingCards((prev) => [...prev, { id: animId, from, toPlayerIndex, faceDown, card }]);
       setTimeout(() => {
@@ -350,6 +370,7 @@ export function useMultiplayer() {
 
   const sendReaction = useCallback(
     (emoji: string, label: string) => {
+      soundEngine.playReactionPop();
       const reaction: PlayerReaction = {
         id: `react-${Date.now()}-${Math.random()}`,
         playerId: localPlayerIdRef.current,
@@ -420,9 +441,8 @@ export function useMultiplayer() {
       existingOnlinePlayers?: Player[];
     }) => {
       const shieldMode = options?.shieldMode ?? stateRef.current.shieldModeEnabled;
-      const fullDeck = generatePRLDeck();
 
-      // Construir lista de jugadores (2 a 4 asientos)
+      // Construir lista de jugadores (2 a 15 asientos)
       const humanPlayers: Player[] =
         options?.existingOnlinePlayers && options.existingOnlinePlayers.length > 0
           ? options.existingOnlinePlayers.map((p) => ({
@@ -450,19 +470,31 @@ export function useMultiplayer() {
         'auditor',
         'temerario',
       ];
-      const maxTotalPlayers = 4;
+      const maxTotalPlayers = MAX_PLAYERS_PER_ROOM;
       const botsNeeded =
         options?.botCount !== undefined
-          ? Math.min(maxTotalPlayers - humanPlayers.length, options.botCount)
-          : Math.max(0, maxTotalPlayers - humanPlayers.length);
+          ? Math.max(0, Math.min(maxTotalPlayers - humanPlayers.length, options.botCount))
+          : Math.max(0, 4 - humanPlayers.length);
+
+      const expectedTotalPlayers = humanPlayers.length + botsNeeded;
+      const deckCopies = expectedTotalPlayers <= 4 ? 1 : expectedTotalPlayers <= 9 ? 2 : 3;
+      const fullDeck = generatePRLDeck(deckCopies);
 
       const botPlayers: Player[] = [];
+      const usedBotNames = new Set<string>();
       for (let i = 0; i < botsNeeded; i++) {
         const profileId = requestedBots[i % requestedBots.length];
         const profile = BOT_PROFILES[profileId];
+        let botDisplayName = profile.name;
+        const shortName = botDisplayName.replace(/\s*\(.*?\)/, '');
+        if (usedBotNames.has(shortName)) {
+          const fallback = EXTRA_BOT_NAMES.find((n) => !usedBotNames.has(n));
+          botDisplayName = fallback || `Operario Bot #${i + 1}`;
+        }
+        usedBotNames.add(botDisplayName.replace(/\s*\(.*?\)/, ''));
         botPlayers.push({
           id: `bot-${profileId}-${i + 1}`,
-          name: profile.name,
+          name: botDisplayName,
           isBot: true,
           botProfile: profileId,
           helmetColor: profile.helmetColor,
@@ -564,7 +596,7 @@ export function useMultiplayer() {
       allPlayers.forEach((_, pIdx) => {
         setTimeout(() => {
           triggerFlyingCard('deck', pIdx, pIdx !== 0);
-        }, pIdx * 140);
+        }, Math.min(pIdx * 65, 650));
       });
 
       setTimeout(() => {
@@ -677,12 +709,12 @@ export function useMultiplayer() {
       }
 
       if ((card.type === 'wild' || card.type === 'wild4') && !chosenWildColor) {
+        soundEngine.playWildSelectorOpen();
         setPendingWildCard(card);
         return;
       }
 
       setPendingWildCard(null);
-      soundEngine.playCardSlap();
 
       const playedCardWithPhysics: PRLCard = {
         ...card,
@@ -696,7 +728,6 @@ export function useMultiplayer() {
         card.color === 'wild' ? chosenWildColor || 'yellow' : card.color;
 
       if (remainingHand.length === 0) {
-        soundEngine.playVictoryFanfare();
         const winState: GameState = {
           ...workingState,
           players: workingState.players.map((p, idx) =>
@@ -751,7 +782,6 @@ export function useMultiplayer() {
       if (card.type === 'reverse') {
         nextDirection = (workingState.direction * -1) as 1 | -1;
         nextReverseFlash = workingState.reverseFlash + 1;
-        soundEngine.playCardSlide();
         if (totalPlayers === 2) {
           step = 2;
         }
@@ -759,15 +789,12 @@ export function useMultiplayer() {
         const skippedIdx = getPlayerIdxAtStep(1, nextDirection);
         nextLotoLockedId = workingState.players[skippedIdx].id;
         step = 2;
-        soundEngine.playHazardAlarm('warning');
       } else if (card.type === 'draw2') {
         nextPendingDraw += 2;
-        soundEngine.playHazardAlarm('warning');
       } else if (card.type === 'wild4') {
         nextPendingDraw += 4;
         nextCameraShake = workingState.cameraShake + 1;
         nextEmergencyAlert = true;
-        soundEngine.playHazardAlarm('critical');
       }
 
       let nextTurnIdx = getPlayerIdxAtStep(step, nextDirection);
@@ -1230,7 +1257,7 @@ export function useMultiplayer() {
         setGameState(nextState);
         if (nextState.isOnlineHost) broadcastState(nextState);
       } else {
-        soundEngine.playHazardAlarm('critical');
+        soundEngine.playShieldFail();
         const { nextDeck, nextDiscard, drawn } = drawFromDeckWithRecycle(
           current.deck,
           current.discardPile,
@@ -1346,22 +1373,17 @@ export function useMultiplayer() {
       }
 
       const activePlayer = current.players[current.currentTurnIndex];
-      // Si un jugador conectado está ausente temporalmente, aceleramos el paso de su turno tras 3s para no frenar la sala
-      if (activePlayer && !activePlayer.isBot && activePlayer.isConnected === false && current.turnTimeLeft <= 12) {
-        executeDrawCard(activePlayer.id);
-        return;
-      }
-
-      if (current.turnTimeLeft <= 1) {
-        if (activePlayer) {
-          setPendingWildCard(null);
+      // Sin límite de tiempo para jugadores conectados.
+      // Únicamente si un jugador online está AUSENTE (desconectado), avanzamos su turno tras 5s para no bloquear la sala.
+      if (activePlayer && !activePlayer.isBot && activePlayer.isConnected === false) {
+        if (current.turnTimeLeft <= 10) {
           executeDrawCard(activePlayer.id);
+        } else {
+          setGameState((prev) => ({
+            ...prev,
+            turnTimeLeft: Math.max(0, prev.turnTimeLeft - 1),
+          }));
         }
-      } else {
-        setGameState((prev) => ({
-          ...prev,
-          turnTimeLeft: Math.max(0, prev.turnTimeLeft - 1),
-        }));
       }
     }, 1000);
 
@@ -1456,9 +1478,11 @@ export function useMultiplayer() {
         if (prev.status === 'lobby' && isExplicitExit) {
           // Si salió voluntariamente antes de iniciar, liberamos el asiento del lobby
           updatedPlayers = prev.players.filter((p) => p.id !== departingPlayerId);
+          soundEngine.playPlayerLeft();
         } else {
           // Si estaba en partida (o cerró pestaña en lobby), conservamos su asiento y cartas para reconexión
           if (target.isConnected === false) return prev;
+          soundEngine.playPlayerLeft();
           updatedPlayers = prev.players.map((p) =>
             p.id === departingPlayerId ? { ...p, isConnected: false } : p
           );
@@ -1502,6 +1526,7 @@ export function useMultiplayer() {
   const handleIncomingNetworkMessage = useCallback(
     (msg: NetworkMessage, sourceConn?: DataConnection) => {
       if (msg.type === 'REACTION') {
+        soundEngine.playReactionPop();
         setReactions((prev) => {
           if (prev.some((r) => r.id === msg.reaction.id)) return prev;
           return [...prev, msg.reaction];
@@ -1642,6 +1667,9 @@ export function useMultiplayer() {
             }
 
             const wasDisconnected = matchedPlayer.isConnected === false;
+            if (wasDisconnected) {
+              soundEngine.playPlayerJoined();
+            }
             const updatedPlayers = current.players.map((p) => {
               if (p.id !== matchedPlayer.id) return p;
               return {
@@ -1705,11 +1733,11 @@ export function useMultiplayer() {
             return;
           }
 
-          if (current.players.length >= 4) {
+          if (current.players.length >= MAX_PLAYERS_PER_ROOM) {
             sendToRequester({
               type: 'JOIN_ERROR',
               targetTempId: msg.playerId,
-              error: 'La sala ya está completa (4/4 jugadores).',
+              error: `La sala ya está completa (${MAX_PLAYERS_PER_ROOM}/${MAX_PLAYERS_PER_ROOM} jugadores).`,
             });
             return;
           }
@@ -1729,6 +1757,7 @@ export function useMultiplayer() {
           }
 
           const updatedPlayers = [...current.players, newPlayer];
+          soundEngine.playPlayerJoined();
           const nextState: GameState = {
             ...current,
             players: updatedPlayers,
@@ -1857,6 +1886,7 @@ export function useMultiplayer() {
         players: [hostPlayer],
       };
       setGameState(initialHostState);
+      soundEngine.playRoomCreated();
       await openHostNetwork(code);
     },
     [localPlayerName, localHelmetColor, openHostNetwork, updateConnectionStatus]
