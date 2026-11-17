@@ -43,6 +43,7 @@ interface LobbyScreenProps {
   isOnlineClient: boolean;
   connectionStatus: 'idle' | 'connecting' | 'connected' | 'error';
   connectionError: string | null;
+  connectionTransportLabel?: string;
   onlinePlayers: Player[];
   lastJoinedRoomCode?: string | null;
   isMuted: boolean;
@@ -50,8 +51,9 @@ interface LobbyScreenProps {
   onToggleMute: () => void;
   onToggleMusicMute: () => void;
   onStartTraining: (botCount: number, bots: BotProfileId[]) => void;
-  onCreateOnlineRoom: () => void;
+  onCreateOnlineRoom: (code?: string) => void;
   onJoinOnlineRoom: (code: string) => void;
+  onCancelJoin?: () => void;
   onStartOnlineMatch: (fillWithBots: boolean) => void;
   onLeaveOnlineRoom?: () => void;
 }
@@ -75,6 +77,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   isOnlineClient,
   connectionStatus,
   connectionError,
+  connectionTransportLabel,
   onlinePlayers,
   lastJoinedRoomCode,
   isMuted,
@@ -84,6 +87,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onStartTraining,
   onCreateOnlineRoom,
   onJoinOnlineRoom,
+  onCancelJoin,
   onStartOnlineMatch,
   onLeaveOnlineRoom,
 }) => {
@@ -96,9 +100,17 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     'temerario',
   ]);
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
+  const [joinInputWarning, setJoinInputWarning] = useState<string | null>(null);
+  const [draftHostCode, setDraftHostCode] = useState<string>(roomCode);
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [fillOnlineWithBots, setFillOnlineWithBots] = useState(true);
+
+  useEffect(() => {
+    if (!isOnlineClient && !isOnlineHost) {
+      setDraftHostCode(roomCode);
+    }
+  }, [roomCode, isOnlineClient, isOnlineHost]);
 
   // Detectar si la URL contiene ?room=PRL-XXX para abrir pestaña online automáticamente
   useEffect(() => {
@@ -114,8 +126,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
   const handleCopyCode = () => {
     soundEngine.playShieldSuccess();
+    const codeToShare = isOnlineHost ? roomCode : draftHostCode;
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(roomCode);
+      navigator.clipboard.writeText(codeToShare);
       setCopiedCode(true);
       setTimeout(() => setCopiedCode(false), 2000);
     }
@@ -123,9 +136,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
   const handleCopyInviteLink = () => {
     soundEngine.playShieldSuccess();
+    const codeToShare = isOnlineHost ? roomCode : draftHostCode;
     if (typeof window !== 'undefined' && navigator.clipboard) {
       const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(
-        roomCode
+        codeToShare
       )}`;
       navigator.clipboard.writeText(inviteUrl);
       setCopiedLink(true);
@@ -508,9 +522,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       {/* Panel 1: Crear Sala como Anfitrión */}
                       <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between">
                         <div>
-                          <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center justify-between gap-2 mb-2">
                             <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-amber-400">
-                              ANFITRIÓN WEBRTC (PEERJS)
+                              ANFITRIÓN P2P + RELAY 5G
                             </span>
                             {isOnlineHost && (
                               <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400">
@@ -518,6 +532,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                               </span>
                             )}
                           </div>
+                          {isOnlineHost && connectionTransportLabel && (
+                            <p className="text-[10px] font-mono text-emerald-300/90 mb-2">
+                              ✓ Red lista: {connectionTransportLabel}
+                            </p>
+                          )}
                           <h4 className="text-sm sm:text-base font-black text-white uppercase mb-1">
                             Crear Sala con Código
                           </h4>
@@ -532,7 +551,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                                 CÓDIGO DE SALA PRL
                               </span>
                               <span className="text-xl sm:text-2xl font-mono font-black tracking-widest text-[#F7B500]">
-                                {roomCode}
+                                {isOnlineHost ? roomCode : draftHostCode}
                               </span>
                             </div>
                             <div className="flex items-center gap-1.5">
@@ -613,11 +632,20 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         {!isOnlineHost ? (
                           <button
                             type="button"
-                            onClick={onCreateOnlineRoom}
-                            className="w-full py-3 rounded-xl bg-[#005A9C] hover:bg-[#006EC0] text-white font-black text-xs sm:text-sm uppercase tracking-wider shadow-lg flex items-center justify-center gap-2 transition-all"
+                            disabled={isOnlineClient}
+                            onClick={() => onCreateOnlineRoom(draftHostCode)}
+                            className={`w-full py-3 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider shadow-lg flex items-center justify-center gap-2 transition-all ${
+                              isOnlineClient
+                                ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                                : 'bg-[#005A9C] hover:bg-[#006EC0] text-white'
+                            }`}
                           >
                             <Sparkles className="w-4 h-4" />
-                            <span>Abrir Sala Online ({roomCode})</span>
+                            <span>
+                              {isOnlineClient
+                                ? 'Modo Invitado Activo'
+                                : `Abrir Sala Online (${draftHostCode})`}
+                            </span>
                           </button>
                         ) : (
                           <button
@@ -651,26 +679,41 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             >
                               CÓDIGO DE INVITACIÓN
                             </label>
-                            <input
+                          <input
                               id="join-code-input"
                               type="text"
                               maxLength={10}
                               value={joinCodeInput}
-                              onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                              onChange={(e) => {
+                                setJoinInputWarning(null);
+                                setJoinCodeInput(e.target.value.toUpperCase());
+                              }}
                               placeholder="Ej: PRL-84X"
                               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 focus:border-sky-400 text-lg font-mono font-black tracking-widest text-white uppercase focus:outline-none"
                             />
                           </div>
 
                           {isOnlineClient && connectionStatus === 'connecting' && (
-                            <p className="text-xs text-amber-300 font-semibold animate-pulse mb-2">
-                              Conectando con el anfitrión de la sala {joinCodeInput}...
-                            </p>
+                            <div className="mb-2.5 p-2.5 rounded-xl bg-amber-950/40 border border-amber-400/40 flex items-center justify-between gap-2">
+                              <p className="text-xs text-amber-300 font-semibold animate-pulse">
+                                Conectando por P2P + Relay 5G con {joinCodeInput || roomCode}...
+                              </p>
+                              {onCancelJoin && (
+                                <button
+                                  type="button"
+                                  onClick={onCancelJoin}
+                                  className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-200 shrink-0"
+                                >
+                                  Cancelar
+                                </button>
+                              )}
+                            </div>
                           )}
                           {isOnlineClient && connectionStatus === 'connected' && (
                             <div className="mb-3 p-2.5 rounded-xl bg-emerald-950/35 border border-emerald-500/40 space-y-2">
                               <p className="text-xs text-emerald-400 font-bold">
-                                ¡Conectado a la sala ({onlinePlayers.length}/15)! Esperando inicio...
+                                ¡Conectado ({onlinePlayers.length}/15)!{' '}
+                                {connectionTransportLabel ? `· ${connectionTransportLabel}` : ''}
                               </p>
                               {onlinePlayers.length > 0 && (
                                 <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
@@ -697,9 +740,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                               )}
                             </div>
                           )}
-                          {connectionError && (
+                          {(connectionError || joinInputWarning) && (
                             <p className="text-xs text-red-400 font-semibold mb-2">
-                              {connectionError}
+                              {joinInputWarning || connectionError}
                             </p>
                           )}
 
@@ -707,6 +750,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             <button
                               type="button"
                               onClick={() => {
+                                setJoinInputWarning(null);
                                 setJoinCodeInput(lastJoinedRoomCode);
                                 onJoinOnlineRoom(lastJoinedRoomCode);
                               }}
@@ -730,10 +774,27 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         ) : (
                           <button
                             type="button"
-                            onClick={() => onJoinOnlineRoom(joinCodeInput || roomCode)}
-                            className="w-full py-3 rounded-xl bg-slate-800 hover:bg-sky-600 text-white font-black text-xs sm:text-sm uppercase tracking-wider border border-slate-700 hover:border-sky-400 transition-all"
+                            disabled={isOnlineClient && connectionStatus === 'connecting'}
+                            onClick={() => {
+                              const codeToJoin = joinCodeInput.trim().toUpperCase();
+                              if (!codeToJoin) {
+                                setJoinInputWarning(
+                                  'Introduce primero el código de sala que abrió el anfitrión.'
+                                );
+                                return;
+                              }
+                              setJoinInputWarning(null);
+                              onJoinOnlineRoom(codeToJoin);
+                            }}
+                            className={`w-full py-3 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider border transition-all ${
+                              isOnlineClient && connectionStatus === 'connecting'
+                                ? 'bg-slate-800 text-slate-400 border-slate-700 cursor-wait'
+                                : 'bg-slate-800 hover:bg-sky-600 text-white border-slate-700 hover:border-sky-400'
+                            }`}
                           >
-                            Conectar a Sala Online
+                            {isOnlineClient && connectionStatus === 'connecting'
+                              ? 'Conectando...'
+                              : 'Conectar a Sala Online'}
                           </button>
                         )}
                       </div>

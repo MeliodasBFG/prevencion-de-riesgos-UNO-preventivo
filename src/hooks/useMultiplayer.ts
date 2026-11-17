@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Peer, DataConnection } from 'peerjs';
+import type { MqttClient } from 'mqtt';
 import {
   PRLCard,
   ActiveColor,
@@ -118,6 +119,67 @@ type NetworkMessage =
   | { type: 'CLIENT_ANSWER_SHIELD'; playerId: string; optionIndex: number }
   | { type: 'REACTION'; reaction: PlayerReaction };
 
+interface NetworkEnvelope {
+  _msgId: string;
+  payload: NetworkMessage;
+}
+
+const WSS_RELAY_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+];
+
+const ICE_SERVERS_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ],
+};
+
+function createEnvelope(payload: NetworkMessage): NetworkEnvelope {
+  return {
+    _msgId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+    payload,
+  };
+}
+
+function unwrapEnvelope(raw: unknown): { msgId: string | null; message: NetworkMessage } | null {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj._msgId === 'string' && obj.payload && typeof obj.payload === 'object') {
+    return {
+      msgId: obj._msgId,
+      message: obj.payload as NetworkMessage,
+    };
+  }
+  if (typeof obj.type === 'string') {
+    return {
+      msgId: null,
+      message: obj as unknown as NetworkMessage,
+    };
+  }
+  return null;
+}
+
+function isDefaultGenericPlayerName(normalizedName: string): boolean {
+  return (
+    normalizedName === 'prevencionista' ||
+    normalizedName === 'operario invitado' ||
+    normalizedName === 'anfitrión prl' ||
+    normalizedName === 'anfitrion prl'
+  );
+}
+
 export const MAX_PLAYERS_PER_ROOM = 15;
 
 const TURN_DURATION_SECONDS = 15;
@@ -199,6 +261,7 @@ export function useMultiplayer() {
   );
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionTransportLabel, setConnectionTransportLabel] = useState<string>('');
   const [connectedPeersCount, setConnectedPeersCount] = useState<number>(0);
 
   // Selector radial local cuando el jugador lanza un Comodín (Evaluación / +4)
@@ -235,12 +298,18 @@ export function useMultiplayer() {
     shieldChallenge: null,
   }));
 
-  // Referencias para PeerJS y BroadcastChannel (fallback multi-pestaña instantáneo)
+  // Referencias para PeerJS, WSS Relay (MQTT sobre TLS 443/8084) y BroadcastChannel
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<DataConnection[]>([]);
   const playerConnMapRef = useRef<Map<string, DataConnection>>(new Map());
   const hostConnRef = useRef<DataConnection | null>(null);
   const bcRef = useRef<BroadcastChannel | null>(null);
+  const mqttClientRef = useRef<MqttClient | null>(null);
+  const mqttTopicHostRef = useRef<string>('');
+  const mqttTopicClientsRef = useRef<string>('');
+  const processedMsgIdsRef = useRef<Set<string>>(new Set());
+  const joinRetryIntervalRef = useRef<number | null>(null);
+  const joinTimeoutRef = useRef<number | null>(null);
   const stateRef = useRef<GameState>(gameState);
   stateRef.current = gameState;
   const didHydrateRef = useRef<boolean>(false);
@@ -319,42 +388,105 @@ export function useMultiplayer() {
     }
   }, [gameState]);
 
-  const broadcastState = useCallback((nextState: GameState) => {
-    const msg: NetworkMessage = { type: 'STATE_SYNC', state: nextState };
-    connectionsRef.current.forEach((conn) => {
-      try {
-        if (conn && conn.open) {
-          conn.send(msg);
-        }
-      } catch {
-        // ignore closed peer
-      }
-    });
-    if (bcRef.current) {
-      try {
-        bcRef.current.postMessage(msg);
-      } catch {
-        // ignore
-      }
+  const clearJoinTimers = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (joinRetryIntervalRef.current !== null) {
+      window.clearInterval(joinRetryIntervalRef.current);
+      joinRetryIntervalRef.current = null;
+    }
+    if (joinTimeoutRef.current !== null) {
+      window.clearTimeout(joinTimeoutRef.current);
+      joinTimeoutRef.current = null;
     }
   }, []);
 
-  const sendToHost = useCallback((msg: NetworkMessage) => {
-    if (hostConnRef.current && hostConnRef.current.open) {
+  const closeAllTransports = useCallback(() => {
+    clearJoinTimers();
+    if (peerRef.current) {
       try {
-        hostConnRef.current.send(msg);
+        peerRef.current.destroy();
       } catch {
         // ignore
       }
+      peerRef.current = null;
     }
     if (bcRef.current) {
       try {
-        bcRef.current.postMessage(msg);
+        bcRef.current.close();
       } catch {
         // ignore
       }
+      bcRef.current = null;
+    }
+    if (mqttClientRef.current) {
+      try {
+        mqttClientRef.current.end(true);
+      } catch {
+        // ignore
+      }
+      mqttClientRef.current = null;
+    }
+    connectionsRef.current = [];
+    playerConnMapRef.current.clear();
+    hostConnRef.current = null;
+    setConnectionTransportLabel('');
+  }, [clearJoinTimers]);
+
+  const publishWss = useCallback((topic: string, envelope: NetworkEnvelope) => {
+    const client = mqttClientRef.current;
+    if (!client || !client.connected || !topic) return;
+    try {
+      client.publish(topic, JSON.stringify(envelope), { qos: 0, retain: false });
+    } catch {
+      // ignore transient publish error
     }
   }, []);
+
+  const broadcastState = useCallback(
+    (nextState: GameState) => {
+      const env = createEnvelope({ type: 'STATE_SYNC', state: nextState });
+      connectionsRef.current = connectionsRef.current.filter((conn) => {
+        if (!conn || !conn.open) return false;
+        try {
+          conn.send(env);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (bcRef.current) {
+        try {
+          bcRef.current.postMessage(env);
+        } catch {
+          // ignore
+        }
+      }
+      publishWss(mqttTopicClientsRef.current, env);
+    },
+    [publishWss]
+  );
+
+  const sendToHost = useCallback(
+    (msg: NetworkMessage) => {
+      const env = createEnvelope(msg);
+      if (hostConnRef.current && hostConnRef.current.open) {
+        try {
+          hostConnRef.current.send(env);
+        } catch {
+          // ignore
+        }
+      }
+      if (bcRef.current) {
+        try {
+          bcRef.current.postMessage(env);
+        } catch {
+          // ignore
+        }
+      }
+      publishWss(mqttTopicHostRef.current, env);
+    },
+    [publishWss]
+  );
 
   const triggerFlyingCard = useCallback(
     (from: 'deck' | 'hand', toPlayerIndex: number, faceDown = true, card?: PRLCard) => {
@@ -387,13 +519,15 @@ export function useMultiplayer() {
       if (stateRef.current.isOnlineClient) {
         sendToHost(msg);
       } else if (stateRef.current.isOnlineHost) {
+        const env = createEnvelope(msg);
         connectionsRef.current.forEach((conn) => {
-          if (conn?.open) conn.send(msg);
+          if (conn?.open) conn.send(env);
         });
-        bcRef.current?.postMessage(msg);
+        bcRef.current?.postMessage(env);
+        publishWss(mqttTopicClientsRef.current, env);
       }
     },
-    [localPlayerName, sendToHost]
+    [localPlayerName, sendToHost, publishWss]
   );
 
   /**
@@ -1521,7 +1655,7 @@ export function useMultiplayer() {
   );
 
   /**
-   * Gestión de mensajes de red entrantes (PeerJS + BroadcastChannel)
+   * Gestión de mensajes de red entrantes (PeerJS + Relay WSS + BroadcastChannel)
    */
   const handleIncomingNetworkMessage = useCallback(
     (msg: NetworkMessage, sourceConn?: DataConnection) => {
@@ -1544,8 +1678,12 @@ export function useMultiplayer() {
             msg.targetTempId === localPlayerIdRef.current ||
             msg.assignedPlayerId === localPlayerIdRef.current
           ) {
+            clearJoinTimers();
             localPlayerIdRef.current = msg.assignedPlayerId;
             setLocalPlayerId(msg.assignedPlayerId);
+            if (msg.assignedName) {
+              setLocalPlayerNameState(msg.assignedName);
+            }
             if (typeof window !== 'undefined') {
               try {
                 sessionStorage.setItem(STORAGE_SESSION_PLAYER_ID_KEY, msg.assignedPlayerId);
@@ -1575,10 +1713,12 @@ export function useMultiplayer() {
 
         if (msg.type === 'JOIN_ERROR') {
           if (msg.targetTempId === localPlayerIdRef.current) {
+            closeAllTransports();
             setConnectionError(msg.error);
             updateConnectionStatus('error');
             setGameState((prev) => ({
               ...prev,
+              roomCode: generateRoomCode(),
               isOnlineClient: false,
             }));
           }
@@ -1586,16 +1726,18 @@ export function useMultiplayer() {
         }
 
         if (msg.type === 'STATE_SYNC') {
+          if (msg.state.roomCode !== stateRef.current.roomCode) return;
           const isInRoom = msg.state.players.some((p) => p.id === localPlayerIdRef.current);
           if (isInRoom) {
+            clearJoinTimers();
             updateConnectionStatus('connected');
             setConnectionError(null);
+            setGameState({
+              ...msg.state,
+              isOnlineHost: false,
+              isOnlineClient: true,
+            });
           }
-          setGameState({
-            ...msg.state,
-            isOnlineHost: false,
-            isOnlineClient: true,
-          });
           return;
         }
       }
@@ -1603,25 +1745,27 @@ export function useMultiplayer() {
       // Lógica autoritativa en el Host
       if (stateRef.current.isOnlineHost) {
         if (msg.type === 'JOIN_REQUEST') {
-          const cleanName = msg.playerName.trim().replace(/\s+/g, ' ') || 'Operario Invitado';
-          const normalizedIncoming = normalizePlayerName(cleanName);
+          let cleanName = msg.playerName.trim().replace(/\s+/g, ' ') || 'Operario Invitado';
+          let normalizedIncoming = normalizePlayerName(cleanName);
           const current = stateRef.current;
 
           const sendToRequester = (payload: NetworkMessage) => {
+            const env = createEnvelope(payload);
             if (sourceConn && sourceConn.open) {
               try {
-                sourceConn.send(payload);
+                sourceConn.send(env);
               } catch {
                 // ignore
               }
             }
             if (bcRef.current) {
               try {
-                bcRef.current.postMessage(payload);
+                bcRef.current.postMessage(env);
               } catch {
                 // ignore
               }
             }
+            publishWss(mqttTopicClientsRef.current, env);
           };
 
           // 1. Buscar coincidencia exacta por playerId o por nombre normalizado (evita duplicados)
@@ -1631,10 +1775,35 @@ export function useMultiplayer() {
           const existingByName = current.players.find(
             (p) => !p.isBot && normalizePlayerName(p.name) === normalizedIncoming
           );
-          const matchedPlayer = existingById || existingByName;
+
+          // Si dos dispositivos distintos entran rápido con el nombre genérico por defecto ("Prevencionista"),
+          // diferenciamos al nuevo invitado automáticamente como "Operario #2", "#3", etc. para no bloquearles.
+          if (
+            !existingById &&
+            existingByName &&
+            isDefaultGenericPlayerName(normalizedIncoming) &&
+            (existingByName.id === localPlayerIdRef.current || existingByName.isConnected !== false)
+          ) {
+            let num = current.players.filter((p) => !p.isBot).length + 1;
+            let candidate = `Operario #${num}`;
+            while (
+              current.players.some(
+                (p) => normalizePlayerName(p.name) === normalizePlayerName(candidate)
+              )
+            ) {
+              num++;
+              candidate = `Operario #${num}`;
+            }
+            cleanName = candidate;
+            normalizedIncoming = normalizePlayerName(cleanName);
+          }
+
+          const finalExistingByName = current.players.find(
+            (p) => !p.isBot && normalizePlayerName(p.name) === normalizedIncoming
+          );
+          const matchedPlayer = existingById || finalExistingByName;
 
           if (matchedPlayer) {
-            // Si coincide el nombre con el Anfitrión pero el ID es distinto -> evitar suplantación / duplicado del nombre del Host
             if (
               matchedPlayer.id === localPlayerIdRef.current &&
               msg.playerId !== localPlayerIdRef.current
@@ -1647,11 +1816,10 @@ export function useMultiplayer() {
               return;
             }
 
-            // Si cambió de nombre al reconectarse por ID en el lobby, aseguramos que tampoco choque con otro jugador
             if (
               existingById &&
-              existingByName &&
-              existingByName.id !== existingById.id
+              finalExistingByName &&
+              finalExistingByName.id !== existingById.id
             ) {
               sendToRequester({
                 type: 'JOIN_ERROR',
@@ -1661,7 +1829,6 @@ export function useMultiplayer() {
               return;
             }
 
-            // Vincular la nueva conexión al asiento existente
             if (sourceConn) {
               playerConnMapRef.current.set(matchedPlayer.id, sourceConn);
             }
@@ -1675,7 +1842,6 @@ export function useMultiplayer() {
               return {
                 ...p,
                 isConnected: true,
-                // En lobby puede actualizar casco o nombre; en partida conserva su identidad exacta
                 helmetColor: current.status === 'lobby' ? msg.helmetColor : p.helmetColor,
                 name: current.status === 'lobby' ? cleanName : p.name,
               };
@@ -1718,11 +1884,10 @@ export function useMultiplayer() {
               assignedName: matchedPlayer.name,
               state: nextState,
             });
-            setTimeout(() => broadcastState(nextState), 50);
+            setTimeout(() => broadcastState(nextState), 60);
             return;
           }
 
-          // 2. Es un jugador nuevo que no existía ni por ID ni por nombre
           if (current.status !== 'lobby') {
             sendToRequester({
               type: 'JOIN_ERROR',
@@ -1775,7 +1940,7 @@ export function useMultiplayer() {
             assignedName: newPlayer.name,
             state: nextState,
           });
-          setTimeout(() => broadcastState(nextState), 50);
+          setTimeout(() => broadcastState(nextState), 60);
           return;
         }
 
@@ -1793,6 +1958,9 @@ export function useMultiplayer() {
       }
     },
     [
+      clearJoinTimers,
+      closeAllTransports,
+      publishWss,
       broadcastState,
       updateConnectionStatus,
       handlePlayerDepartureOnHost,
@@ -1803,39 +1971,169 @@ export function useMultiplayer() {
     ]
   );
 
+  const handleIncomingRef = useRef(handleIncomingNetworkMessage);
+  handleIncomingRef.current = handleIncomingNetworkMessage;
+
+  const processRawIncoming = useCallback((raw: unknown, sourceConn?: DataConnection) => {
+    const unwrapped = unwrapEnvelope(raw);
+    if (!unwrapped) return;
+
+    if (unwrapped.msgId) {
+      if (processedMsgIdsRef.current.has(unwrapped.msgId)) return;
+      processedMsgIdsRef.current.add(unwrapped.msgId);
+      if (processedMsgIdsRef.current.size > 220) {
+        const first = processedMsgIdsRef.current.values().next().value;
+        if (first) processedMsgIdsRef.current.delete(first);
+      }
+    }
+
+    handleIncomingRef.current(unwrapped.message, sourceConn);
+  }, []);
+
   /**
-   * Abrir PeerJS y BroadcastChannel en modo Host (tanto al crear sala como al restaurar tras recarga)
+   * Conecta al Relay WebSocket TLS (puerto 8084/443) para atravesar 5G CGNAT y firewalls sin configuración.
+   */
+  const openWssRelay = useCallback(
+    async (
+      code: string,
+      role: 'host' | 'client',
+      onReady?: () => void,
+      brokerIndex = 0
+    ) => {
+      if (typeof window === 'undefined') return;
+      const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const hostTopic = `unoprl/riesgocero/v2/${clean}/host`;
+      const clientsTopic = `unoprl/riesgocero/v2/${clean}/clients`;
+      mqttTopicHostRef.current = hostTopic;
+      mqttTopicClientsRef.current = clientsTopic;
+
+      if (mqttClientRef.current) {
+        try {
+          mqttClientRef.current.end(true);
+        } catch {
+          // ignore
+        }
+        mqttClientRef.current = null;
+      }
+
+      const brokerUrl = WSS_RELAY_BROKERS[brokerIndex];
+      if (!brokerUrl) return;
+
+      try {
+        const mqttMod = await import('mqtt');
+        const connectFn = mqttMod.connect || mqttMod.default?.connect;
+        if (!connectFn) return;
+
+        const client = connectFn(brokerUrl, {
+          clean: true,
+          connectTimeout: 5500,
+          reconnectPeriod: 2500,
+          keepalive: 25,
+          clientId: `unoprl_${role}_${Math.random().toString(36).slice(2, 10)}`,
+        });
+
+        mqttClientRef.current = client;
+        let switched = false;
+
+        const switchBrokerIfNeeded = () => {
+          if (switched || mqttClientRef.current !== client) return;
+          if (brokerIndex + 1 < WSS_RELAY_BROKERS.length) {
+            switched = true;
+            try {
+              client.end(true);
+            } catch {
+              // ignore
+            }
+            openWssRelay(code, role, onReady, brokerIndex + 1);
+          }
+        };
+
+        const fallbackTimer = window.setTimeout(() => {
+          if (!client.connected) {
+            switchBrokerIfNeeded();
+          }
+        }, 5000);
+
+        client.on('connect', () => {
+          window.clearTimeout(fallbackTimer);
+          const subTopic = role === 'host' ? hostTopic : clientsTopic;
+          client.subscribe(subTopic, { qos: 0 }, (err) => {
+            if (!err) {
+              setConnectionTransportLabel((prev) =>
+                prev.includes('P2P') ? 'P2P + Relay 5G/Cloud' : 'Relay 5G/Cloud Activo'
+              );
+              onReady?.();
+            }
+          });
+        });
+
+        client.on('message', (_topic, payload) => {
+          processRawIncoming(payload.toString());
+        });
+
+        client.on('error', () => {
+          window.clearTimeout(fallbackTimer);
+          if (!client.connected) {
+            switchBrokerIfNeeded();
+          }
+        });
+      } catch {
+        // ignore if mqtt fails in restricted environment
+      }
+    },
+    [processRawIncoming]
+  );
+
+  /**
+   * Abrir PeerJS, WSS Relay 5G y BroadcastChannel en modo Host
    */
   const openHostNetwork = useCallback(
     async (code: string) => {
+      closeAllTransports();
+
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        if (bcRef.current) bcRef.current.close();
         const bc = new BroadcastChannel(normalizeRoomPeerId(code));
-        bc.onmessage = (ev) => handleIncomingNetworkMessage(ev.data as NetworkMessage);
+        bc.onmessage = (ev) => processRawIncoming(ev.data);
         bcRef.current = bc;
       }
 
+      // Canal 1: Relay WebSocket TLS (garantiza conexión desde móviles 5G/4G)
+      openWssRelay(code, 'host', () => {
+        updateConnectionStatus('connected');
+      });
+
+      // Canal 2: PeerJS WebRTC P2P directo
       try {
         const { Peer } = await import('peerjs');
-        if (peerRef.current) {
-          peerRef.current.destroy();
-        }
         const peerId = normalizeRoomPeerId(code);
-        const peer = new Peer(peerId);
+        const peer = new Peer(peerId, {
+          config: ICE_SERVERS_CONFIG,
+          debug: 0,
+        });
         peerRef.current = peer;
 
         peer.on('open', () => {
+          setConnectionTransportLabel((prev) =>
+            prev.includes('Relay') ? 'P2P + Relay 5G/Cloud' : 'P2P WebRTC Activo'
+          );
           updateConnectionStatus('connected');
+        });
+
+        peer.on('disconnected', () => {
+          try {
+            if (!peer.destroyed) peer.reconnect();
+          } catch {
+            // ignore
+          }
         });
 
         peer.on('connection', (conn) => {
           connectionsRef.current.push(conn);
           conn.on('data', (data) => {
-            handleIncomingNetworkMessage(data as NetworkMessage, conn);
+            processRawIncoming(data, conn);
           });
           conn.on('close', () => {
             connectionsRef.current = connectionsRef.current.filter((c) => c !== conn);
-            // Buscar si esta conexión era la conexión activa de algún jugador para marcarlo desconectado
             playerConnMapRef.current.forEach((mappedConn, mappedPlayerId) => {
               if (mappedConn === conn) {
                 playerConnMapRef.current.delete(mappedPlayerId);
@@ -1844,22 +2142,29 @@ export function useMultiplayer() {
             });
           });
           conn.on('open', () => {
-            conn.send({ type: 'STATE_SYNC', state: stateRef.current });
+            conn.send(createEnvelope({ type: 'STATE_SYNC', state: stateRef.current }));
           });
         });
 
         peer.on('error', () => {
+          // Si falla PeerJS pero WSS Relay o BroadcastChannel están activos, la sala sigue operativa
           updateConnectionStatus('connected');
         });
       } catch {
         updateConnectionStatus('connected');
       }
     },
-    [handleIncomingNetworkMessage, handlePlayerDepartureOnHost, updateConnectionStatus]
+    [
+      closeAllTransports,
+      processRawIncoming,
+      openWssRelay,
+      handlePlayerDepartureOnHost,
+      updateConnectionStatus,
+    ]
   );
 
   /**
-   * Crear sala multijugador online como Host (PeerJS + BroadcastChannel)
+   * Crear sala multijugador online como Host
    */
   const createOnlineRoom = useCallback(
     async (customCode?: string) => {
@@ -1894,19 +2199,19 @@ export function useMultiplayer() {
 
   /**
    * Unirse a una sala multijugador online mediante código (ej. PRL-84X)
-   * Recupera automáticamente la identidad previa si el jugador se salió y volvió a entrar.
+   * Usa BroadcastChannel + WebRTC PeerJS + Relay WebSocket TLS para conectar PC ↔ Móvil 5G sin bloqueos.
    */
   const joinOnlineRoom = useCallback(
     async (rawCode: string) => {
       const cleanCode = rawCode.trim().toUpperCase();
       if (!cleanCode) return;
 
+      closeAllTransports();
       updateConnectionStatus('connecting');
       setConnectionError(null);
 
-      // Si el usuario tiene una identidad guardada para esta sala y no está jugando como host en ella, reutilizarla
       let effectivePlayerId = localPlayerIdRef.current;
-      let effectivePlayerName = localPlayerName.trim() || 'Operario Invitado';
+      const effectivePlayerName = localPlayerName.trim() || 'Operario Invitado';
       if (typeof window !== 'undefined') {
         try {
           const savedRoomIdentityRaw = localStorage.getItem(
@@ -1929,8 +2234,6 @@ export function useMultiplayer() {
               sessionStorage.setItem(STORAGE_SESSION_PLAYER_ID_KEY, parsed.playerId);
             }
           }
-          localStorage.setItem(STORAGE_LAST_CLIENT_ROOM_KEY, cleanCode);
-          setLastJoinedRoomCode(cleanCode);
         } catch {
           // ignore
         }
@@ -1950,69 +2253,106 @@ export function useMultiplayer() {
         helmetColor: localHelmetColor,
       };
 
-      // 1. Conectar por BroadcastChannel (si el host está en otra pestaña local)
+      const dispatchJoin = () => {
+        if (connectionStatusRef.current === 'connected') return;
+        sendToHost(joinMsg);
+      };
+
+      // 1. BroadcastChannel (pestañas locales)
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        if (bcRef.current) bcRef.current.close();
         const bc = new BroadcastChannel(normalizeRoomPeerId(cleanCode));
-        bc.onmessage = (ev) => {
-          const data = ev.data as NetworkMessage;
-          handleIncomingNetworkMessage(data);
-        };
+        bc.onmessage = (ev) => processRawIncoming(ev.data);
         bcRef.current = bc;
-        bc.postMessage(joinMsg);
+        bc.postMessage(createEnvelope(joinMsg));
       }
 
-      // 2. Conectar por WebRTC PeerJS (entre dispositivos distintos en Vercel)
+      // 2. Relay WebSocket TLS (crucial para móviles en 5G/4G con CGNAT)
+      openWssRelay(cleanCode, 'client', () => {
+        dispatchJoin();
+      });
+
+      // 3. PeerJS WebRTC P2P
       try {
         const { Peer } = await import('peerjs');
-        if (peerRef.current) {
-          peerRef.current.destroy();
-        }
-        const peer = new Peer();
+        const peer = new Peer({
+          config: ICE_SERVERS_CONFIG,
+          debug: 0,
+        });
         peerRef.current = peer;
 
         peer.on('open', () => {
+          if (connectionStatusRef.current === 'connected') return;
           const hostPeerId = normalizeRoomPeerId(cleanCode);
-          const conn = peer.connect(hostPeerId, { reliable: true });
+          const conn = peer.connect(hostPeerId, {
+            serialization: 'json',
+            reliable: true,
+          });
           hostConnRef.current = conn;
 
           conn.on('open', () => {
-            conn.send(joinMsg);
+            conn.send(createEnvelope(joinMsg));
           });
 
           conn.on('data', (data) => {
-            handleIncomingNetworkMessage(data as NetworkMessage);
-          });
-
-          conn.on('error', () => {
-            if (connectionStatusRef.current !== 'connected') {
-              setConnectionError('No se pudo enlazar con el anfitrión de la sala.');
-            }
+            processRawIncoming(data);
           });
         });
 
         peer.on('error', () => {
-          if (connectionStatusRef.current !== 'connected') {
-            setConnectionError(
-              'Sala no encontrada o sin respuesta. Verifica el código o inicia una sala nueva.'
-            );
-            updateConnectionStatus('error');
-          }
+          // No abortamos inmediatamente porque WSS Relay puede completar la conexión
         });
       } catch {
-        if (connectionStatusRef.current !== 'connected') {
-          setConnectionError('Error al inicializar WebRTC PeerJS.');
-          updateConnectionStatus('error');
-        }
+        // Relay WSS sigue activo como respaldo
+      }
+
+      // Reintentos automáticos cada 2.2s hasta conectar o llegar al timeout de 14s
+      if (typeof window !== 'undefined') {
+        joinRetryIntervalRef.current = window.setInterval(() => {
+          if (connectionStatusRef.current === 'connecting') {
+            dispatchJoin();
+          } else {
+            clearJoinTimers();
+          }
+        }, 2200);
+
+        joinTimeoutRef.current = window.setTimeout(() => {
+          if (connectionStatusRef.current === 'connecting') {
+            closeAllTransports();
+            setConnectionError(
+              `No se recibió respuesta de la sala ${cleanCode}. Verifica que el anfitrión pulsó "Abrir Sala Online" en su dispositivo, mantiene esa ventana abierta y el código es exacto.`
+            );
+            updateConnectionStatus('error');
+            setGameState((prev) => ({
+              ...prev,
+              roomCode: generateRoomCode(),
+              isOnlineClient: false,
+            }));
+          }
+        }, 14000);
       }
     },
     [
       localPlayerName,
       localHelmetColor,
-      handleIncomingNetworkMessage,
+      closeAllTransports,
+      clearJoinTimers,
+      sendToHost,
+      processRawIncoming,
+      openWssRelay,
       updateConnectionStatus,
     ]
   );
+
+  const cancelJoinAttempt = useCallback(() => {
+    closeAllTransports();
+    updateConnectionStatus('idle');
+    setConnectionError(null);
+    setGameState((prev) => ({
+      ...prev,
+      roomCode: generateRoomCode(),
+      isOnlineClient: false,
+    }));
+  }, [closeAllTransports, updateConnectionStatus]);
 
   // Avisar al Host si el jugador cierra la pestaña o recarga (para marcarlo desconectado sin perder su asiento)
   useEffect(() => {
@@ -2082,21 +2422,7 @@ export function useMultiplayer() {
       }
     }
 
-    if (peerRef.current) {
-      try {
-        peerRef.current.destroy();
-      } catch {
-        // ignore
-      }
-      peerRef.current = null;
-    }
-    if (bcRef.current) {
-      bcRef.current.close();
-      bcRef.current = null;
-    }
-    connectionsRef.current = [];
-    playerConnMapRef.current.clear();
-    hostConnRef.current = null;
+    closeAllTransports();
     updateConnectionStatus('idle');
     setConnectionError(null);
     setPendingWildCard(null);
@@ -2104,6 +2430,7 @@ export function useMultiplayer() {
     setGameState((prev) => ({
       ...prev,
       status: 'lobby',
+      roomCode: prev.isOnlineClient ? generateRoomCode() : prev.roomCode,
       isOnlineHost: false,
       isOnlineClient: false,
       players: [],
@@ -2111,7 +2438,7 @@ export function useMultiplayer() {
       shieldChallenge: null,
       unoPendingPlayerId: null,
     }));
-  }, [sendToHost, updateConnectionStatus]);
+  }, [sendToHost, closeAllTransports, updateConnectionStatus]);
 
   const setShieldMode = useCallback((enabled: boolean) => {
     setGameState((prev) => ({ ...prev, shieldModeEnabled: enabled }));
@@ -2127,6 +2454,7 @@ export function useMultiplayer() {
     lastJoinedRoomCode,
     connectionStatus,
     connectionError,
+    connectionTransportLabel,
     connectedPeersCount,
     pendingWildCard,
     setPendingWildCard,
@@ -2136,6 +2464,7 @@ export function useMultiplayer() {
     startMatch,
     createOnlineRoom,
     joinOnlineRoom,
+    cancelJoinAttempt,
     leaveToLobby,
     executePlayCard,
     executeDrawCard,

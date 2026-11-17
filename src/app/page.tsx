@@ -18,6 +18,7 @@ export default function UnoPreventivoApp() {
     lastJoinedRoomCode,
     connectionStatus,
     connectionError,
+    connectionTransportLabel,
     pendingWildCard,
     setPendingWildCard,
     invalidCardId,
@@ -26,6 +27,7 @@ export default function UnoPreventivoApp() {
     startMatch,
     createOnlineRoom,
     joinOnlineRoom,
+    cancelJoinAttempt,
     leaveToLobby,
     executePlayCard,
     executeDrawCard,
@@ -163,6 +165,7 @@ export default function UnoPreventivoApp() {
         isOnlineClient={gameState.isOnlineClient}
         connectionStatus={connectionStatus}
         connectionError={connectionError}
+        connectionTransportLabel={connectionTransportLabel}
         onlinePlayers={gameState.players}
         lastJoinedRoomCode={lastJoinedRoomCode}
         isMuted={isMuted}
@@ -170,8 +173,9 @@ export default function UnoPreventivoApp() {
         onToggleMute={handleToggleMute}
         onToggleMusicMute={handleToggleMusicMute}
         onStartTraining={handleStartTraining}
-        onCreateOnlineRoom={() => createOnlineRoom(gameState.roomCode)}
+        onCreateOnlineRoom={(code?: string) => createOnlineRoom(code || gameState.roomCode)}
         onJoinOnlineRoom={joinOnlineRoom}
+        onCancelJoin={cancelJoinAttempt}
         onStartOnlineMatch={handleStartOnlineMatch}
         onLeaveOnlineRoom={leaveToLobby}
       />
